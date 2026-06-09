@@ -1,0 +1,23 @@
+.env
+.env.local
+*.pyc
+__pycache__/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+.idea/
+.vscode/
+
+# Local SQLite database with linked-user data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Local CLI agent state
+.claude/

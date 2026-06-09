@@ -1,0 +1,33 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ra
+      POSTGRES_PASSWORD: ra
+      POSTGRES_DB: ra_bot
+    ports:
+      - "5432:5432"
+    volumes:
+      - ra_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ra -d ra_bot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  bot:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DISCORD_TOKEN: ${DISCORD_TOKEN}
+      DEV_GUILD_IDS: ${DEV_GUILD_IDS:-}
+      RA_API_USERNAME: ${RA_API_USERNAME}
+      RA_API_KEY: ${RA_API_KEY}
+      DATABASE_URL: postgresql+asyncpg://ra:ra@db:5432/ra_bot
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    restart: unless-stopped
+
+volumes:
+  ra_pg_data:

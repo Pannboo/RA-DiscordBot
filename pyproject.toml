@@ -1,0 +1,34 @@
+[project]
+name = "ra-discord-bot"
+version = "0.1.0"
+description = "Discord bot that posts RetroAchievements unlocks, mastery awards, and milestones."
+requires-python = ">=3.11"
+dependencies = [
+    "discord.py>=2.4.0",
+    "httpx>=0.27.0",
+    "SQLAlchemy[asyncio]>=2.0.30",
+    "asyncpg>=0.29.0",
+    "aiosqlite>=0.20.0",
+    "alembic>=1.13.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.3.0",
+    "python-dotenv>=1.0.1",
+    "structlog>=24.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.5.0",
+    "mypy>=1.10.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["bot*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
