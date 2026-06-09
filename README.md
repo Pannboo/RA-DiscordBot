@@ -1,5 +1,12 @@
 # RA-DiscordBot
 
+> **Disclaimer:** this project was built with AI assistance (Anthropic's
+> Claude, via Claude Code). All design decisions, scope, and direction
+> are mine — the AI was used as a coding pair to accelerate
+> implementation. Treat the code accordingly: review before deploying
+> against a production guild, and please open an issue if you spot
+> anything off.
+
 A multi-guild Discord bot that brings RetroAchievements into Discord:
 live unlock feeds, mastery / beaten / completion awards, session start
 notifications, points milestones, profile lookups, server leaderboards,
