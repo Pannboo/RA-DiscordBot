@@ -17,7 +17,8 @@ class VsSide:
     softcore: int
     retropoints: int
     rank: int | None
-    masteries: int
+    masteries: int  # awards_seen.kind = 'mastered'
+    beatens: int  # awards_seen.kind = 'beaten_hc'
 
 
 def _arrow(a: int, b: int) -> tuple[str, str]:
@@ -48,6 +49,7 @@ def vs_embed(left: VsSide, right: VsSide) -> discord.Embed:
             row("💧 Softcore Points", left.softcore, right.softcore),
             row("💎 RetroPoints", left.retropoints, right.retropoints),
             row("🏆 Masteries", left.masteries, right.masteries),
+            row("⚔️ Beaten (HC)", left.beatens, right.beatens),
         ]
     )
 

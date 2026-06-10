@@ -192,6 +192,7 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
             app_commands.Choice(name="Softcore points", value="softcore"),
             app_commands.Choice(name="RetroPoints", value="retropoints"),
             app_commands.Choice(name="Masteries", value="masteries"),
+            app_commands.Choice(name="Beaten (Hardcore)", value="beatens"),
         ]
     )
     @app_commands.guild_only()
@@ -209,18 +210,18 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
         async with get_session() as session:
             users = (await session.execute(select(User))).scalars().all()
             users = [u for u in users if u.discord_id in guild_member_ids]
-            # Mastery counts per user — single grouped query.
-            mastery_counts: dict[str, int] = {}
+            # Per-user counts grouped by kind, so we can tell masteries apart from beatens.
+            counts: dict[tuple[str, str], int] = {}
             if users:
                 rows = await session.execute(
-                    select(AwardSeen.ra_username, func.count())
+                    select(AwardSeen.ra_username, AwardSeen.kind, func.count())
                     .where(
                         AwardSeen.ra_username.in_([u.ra_username for u in users]),
                         AwardSeen.kind.in_(("mastered", "beaten_hc")),
                     )
-                    .group_by(AwardSeen.ra_username)
+                    .group_by(AwardSeen.ra_username, AwardSeen.kind)
                 )
-                mastery_counts = {ra_user: cnt for ra_user, cnt in rows.all()}
+                counts = {(ra_user, kind): cnt for ra_user, kind, cnt in rows.all()}
 
         rows = [
             LeaderRow(
@@ -229,7 +230,8 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
                 hardcore=u.total_points,
                 softcore=u.total_softcore_points,
                 retropoints=u.total_retro_points,
-                masteries=mastery_counts.get(u.ra_username, 0),
+                masteries=counts.get((u.ra_username, "mastered"), 0),
+                beatens=counts.get((u.ra_username, "beaten_hc"), 0),
             )
             for u in users
         ]
@@ -239,6 +241,7 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
                 "softcore": r.softcore,
                 "retropoints": r.retropoints,
                 "masteries": r.masteries,
+                "beatens": r.beatens,
             }[sort_key],
             reverse=True,
         )
@@ -298,17 +301,19 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
             return
 
         async with get_session() as session:
-            mastery_rows = await session.execute(
-                select(AwardSeen.ra_username, func.count())
+            award_rows = await session.execute(
+                select(AwardSeen.ra_username, AwardSeen.kind, func.count())
                 .where(
                     AwardSeen.ra_username.in_(
                         [left_user.ra_username, right_user.ra_username]
                     ),
                     AwardSeen.kind.in_(("mastered", "beaten_hc")),
                 )
-                .group_by(AwardSeen.ra_username)
+                .group_by(AwardSeen.ra_username, AwardSeen.kind)
             )
-            masteries = {ra_user: cnt for ra_user, cnt in mastery_rows.all()}
+            counts: dict[tuple[str, str], int] = {
+                (ra_user, kind): cnt for ra_user, kind, cnt in award_rows.all()
+            }
 
         left_side = VsSide(
             ra_username=left_summary.user,
@@ -317,7 +322,8 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
             softcore=left_summary.total_softcore_points,
             retropoints=left_summary.total_true_points,
             rank=left_summary.rank,
-            masteries=masteries.get(left_user.ra_username, 0),
+            masteries=counts.get((left_user.ra_username, "mastered"), 0),
+            beatens=counts.get((left_user.ra_username, "beaten_hc"), 0),
         )
         right_side = VsSide(
             ra_username=right_summary.user,
@@ -326,7 +332,8 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
             softcore=right_summary.total_softcore_points,
             retropoints=right_summary.total_true_points,
             rank=right_summary.rank,
-            masteries=masteries.get(right_user.ra_username, 0),
+            masteries=counts.get((right_user.ra_username, "mastered"), 0),
+            beatens=counts.get((right_user.ra_username, "beaten_hc"), 0),
         )
         await interaction.followup.send(embed=vs_embed(left_side, right_side))
 

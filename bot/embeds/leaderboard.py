@@ -16,7 +16,8 @@ class LeaderRow:
     hardcore: int
     softcore: int
     retropoints: int
-    masteries: int  # mastered + beaten_hc count from awards_seen
+    masteries: int  # awards_seen.kind = 'mastered'  (every achievement on HC)
+    beatens: int  # awards_seen.kind = 'beaten_hc'  (win condition on HC)
 
 
 SORT_LABELS = {
@@ -24,6 +25,7 @@ SORT_LABELS = {
     "softcore": "Softcore Points",
     "retropoints": "RetroPoints",
     "masteries": "Masteries",
+    "beatens": "Beaten (Hardcore)",
 }
 
 
@@ -47,19 +49,21 @@ def leaderboard_embed(
     lines = []
     for i, r in enumerate(rows):
         primary = {
-            "hardcore": f"{r.hardcore:,} HC",
-            "softcore": f"{r.softcore:,} SC",
+            "hardcore": f"{r.hardcore:,} HC pts",
+            "softcore": f"{r.softcore:,} SC pts",
             "retropoints": f"{r.retropoints:,} RP",
             "masteries": f"{r.masteries:,} masteries",
+            "beatens": f"{r.beatens:,} beaten",
         }[sort_key]
-        secondary = " · ".join(
-            v
-            for v in [
-                f"{r.hardcore:,} HC" if sort_key != "hardcore" else None,
-                f"{r.masteries:,} 🏆" if sort_key != "masteries" else None,
-            ]
-            if v is not None
-        )
+        # Always show a compact secondary line with the non-primary highlights.
+        secondary_parts = []
+        if sort_key != "hardcore":
+            secondary_parts.append(f"{r.hardcore:,} HC")
+        if sort_key != "masteries":
+            secondary_parts.append(f"🏆 {r.masteries:,}")
+        if sort_key != "beatens":
+            secondary_parts.append(f"⚔️ {r.beatens:,}")
+        secondary = " · ".join(secondary_parts)
         lines.append(
             f"{_rank_emoji(i)}  **[{r.ra_username}]({user_url(r.ra_username)})** — {primary}"
             + (f"\n　　*{secondary}*" if secondary else "")
