@@ -58,11 +58,11 @@ def leaderboard_embed(
         # Always show a compact secondary line with the non-primary highlights.
         secondary_parts = []
         if sort_key != "hardcore":
-            secondary_parts.append(f"{r.hardcore:,} HC")
+            secondary_parts.append(f"🔥 {r.hardcore:,} HC")
         if sort_key != "masteries":
-            secondary_parts.append(f"🏆 {r.masteries:,}")
+            secondary_parts.append(f"🏆 {r.masteries:,} Mastered")
         if sort_key != "beatens":
-            secondary_parts.append(f"⚔️ {r.beatens:,}")
+            secondary_parts.append(f"⚔️ {r.beatens:,} Beaten")
         secondary = " · ".join(secondary_parts)
         lines.append(
             f"{_rank_emoji(i)}  **[{r.ra_username}]({user_url(r.ra_username)})** — {primary}"
