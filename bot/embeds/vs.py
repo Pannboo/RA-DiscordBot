@@ -49,7 +49,7 @@ def vs_embed(left: VsSide, right: VsSide) -> discord.Embed:
             row("💧 Softcore Points", left.softcore, right.softcore),
             row("💎 RetroPoints", left.retropoints, right.retropoints),
             row("🏆 Masteries", left.masteries, right.masteries),
-            row("⚔️ Beaten (HC)", left.beatens, right.beatens),
+            row("⚔️ Beaten (not mastered)", left.beatens, right.beatens),
         ]
     )
 

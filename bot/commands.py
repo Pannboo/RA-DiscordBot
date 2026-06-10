@@ -192,7 +192,7 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
             app_commands.Choice(name="Softcore points", value="softcore"),
             app_commands.Choice(name="RetroPoints", value="retropoints"),
             app_commands.Choice(name="Masteries", value="masteries"),
-            app_commands.Choice(name="Beaten (Hardcore)", value="beatens"),
+            app_commands.Choice(name="Beaten (not yet mastered)", value="beatens"),
         ]
     )
     @app_commands.guild_only()
@@ -223,18 +223,22 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
                 )
                 counts = {(ra_user, kind): cnt for ra_user, kind, cnt in rows.all()}
 
-        rows = [
-            LeaderRow(
+        def _row(u: User) -> LeaderRow:
+            mastered = counts.get((u.ra_username, "mastered"), 0)
+            beaten_raw = counts.get((u.ra_username, "beaten_hc"), 0)
+            # RA awards a "beaten" alongside every mastery; subtract so the
+            # displayed numbers are disjoint (beaten-but-not-yet-mastered).
+            return LeaderRow(
                 discord_id=u.discord_id,
                 ra_username=u.ra_username,
                 hardcore=u.total_points,
                 softcore=u.total_softcore_points,
                 retropoints=u.total_retro_points,
-                masteries=counts.get((u.ra_username, "mastered"), 0),
-                beatens=counts.get((u.ra_username, "beaten_hc"), 0),
+                masteries=mastered,
+                beatens=max(0, beaten_raw - mastered),
             )
-            for u in users
-        ]
+
+        rows = [_row(u) for u in users]
         rows.sort(
             key=lambda r: {
                 "hardcore": r.hardcore,
@@ -315,26 +319,23 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
                 (ra_user, kind): cnt for ra_user, kind, cnt in award_rows.all()
             }
 
-        left_side = VsSide(
-            ra_username=left_summary.user,
-            pic=left_summary.user_pic,
-            hardcore=left_summary.total_points,
-            softcore=left_summary.total_softcore_points,
-            retropoints=left_summary.total_true_points,
-            rank=left_summary.rank,
-            masteries=counts.get((left_user.ra_username, "mastered"), 0),
-            beatens=counts.get((left_user.ra_username, "beaten_hc"), 0),
-        )
-        right_side = VsSide(
-            ra_username=right_summary.user,
-            pic=right_summary.user_pic,
-            hardcore=right_summary.total_points,
-            softcore=right_summary.total_softcore_points,
-            retropoints=right_summary.total_true_points,
-            rank=right_summary.rank,
-            masteries=counts.get((right_user.ra_username, "mastered"), 0),
-            beatens=counts.get((right_user.ra_username, "beaten_hc"), 0),
-        )
+        def _side(summary, user) -> VsSide:  # noqa: ANN001
+            mastered = counts.get((user.ra_username, "mastered"), 0)
+            beaten_raw = counts.get((user.ra_username, "beaten_hc"), 0)
+            return VsSide(
+                ra_username=summary.user,
+                pic=summary.user_pic,
+                hardcore=summary.total_points,
+                softcore=summary.total_softcore_points,
+                retropoints=summary.total_true_points,
+                rank=summary.rank,
+                masteries=mastered,
+                # Disjoint with masteries: see comment in /ra top.
+                beatens=max(0, beaten_raw - mastered),
+            )
+
+        left_side = _side(left_summary, left_user)
+        right_side = _side(right_summary, right_user)
         await interaction.followup.send(embed=vs_embed(left_side, right_side))
 
     # ---- Admin --------------------------------------------------------------
