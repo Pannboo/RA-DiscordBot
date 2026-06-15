@@ -103,6 +103,29 @@ class UserAwards(RABase):
     visible_user_awards: list[AwardEntry] = Field(default_factory=list, alias="VisibleUserAwards")
 
 
+class AchievementInfo(RABase):
+    """A single achievement inside a game set, with optional per-user unlock state."""
+
+    id: int = Field(alias="ID")
+    title: str = Field(default="", alias="Title")
+    description: str = Field(default="", alias="Description")
+    points: int = Field(default=0, alias="Points")
+    true_ratio: int = Field(default=0, alias="TrueRatio")
+    badge_name: str = Field(default="", alias="BadgeName")
+    author: str = Field(default="", alias="Author")
+    display_order: int = Field(default=0, alias="DisplayOrder")
+    num_awarded: int = Field(default=0, alias="NumAwarded")
+    num_awarded_hardcore: int = Field(default=0, alias="NumAwardedHardcore")
+    type: str | None = Field(default=None, alias="type")
+    date_earned: datetime | None = Field(default=None, alias="DateEarned")
+    date_earned_hardcore: datetime | None = Field(default=None, alias="DateEarnedHardcore")
+
+    @field_validator("date_earned", "date_earned_hardcore", mode="before")
+    @classmethod
+    def _parse_earned(cls, v):  # noqa: ANN001
+        return _parse_dt(v)
+
+
 class GameInfoProgress(RABase):
     game_id: int = Field(alias="ID")
     title: str = Field(alias="Title")
@@ -113,3 +136,12 @@ class GameInfoProgress(RABase):
     num_awarded_to_user_hardcore: int = Field(default=0, alias="NumAwardedToUserHardcore")
     user_completion: str | None = Field(default=None, alias="UserCompletion")
     user_completion_hardcore: str | None = Field(default=None, alias="UserCompletionHardcore")
+    achievements: list[AchievementInfo] = Field(default_factory=list, alias="Achievements")
+
+    @field_validator("achievements", mode="before")
+    @classmethod
+    def _flatten_achievements(cls, v):  # noqa: ANN001
+        """RA serves Achievements as a dict keyed by ID. Flatten to a list."""
+        if isinstance(v, dict):
+            return list(v.values())
+        return v or []

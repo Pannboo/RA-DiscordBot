@@ -102,3 +102,28 @@ class MilestoneSeen(Base):
     kind: Mapped[str] = mapped_column(String(32))  # points_hc, points_sc, retropoints
     value: Mapped[int] = mapped_column(Integer)
     awarded_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
+
+
+class AOTWState(Base):
+    """Singleton row tracking which Achievement of the Week is currently announced.
+
+    The refresh loop only broadcasts when the achievement ID changes, so this
+    survives restarts without re-spamming the announce channels.
+    """
+
+    __tablename__ = "aotw_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)  # always 1
+    achievement_id: Mapped[int | None] = mapped_column(Integer)
+    posted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class AOTWPin(Base):
+    """Per-guild record of the AOTW message we pinned, so we can unpin it on rotation."""
+
+    __tablename__ = "aotw_pins"
+
+    guild_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    channel_id: Mapped[int] = mapped_column(BigInteger)
+    message_id: Mapped[int] = mapped_column(BigInteger)
+    achievement_id: Mapped[int] = mapped_column(Integer)

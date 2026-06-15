@@ -25,7 +25,7 @@ SORT_LABELS = {
     "softcore": "Softcore Points",
     "retropoints": "RetroPoints",
     "masteries": "Masteries",
-    "beatens": "Beaten (not yet mastered)",
+    "beatens": "Beaten (Hardcore)",
 }
 
 

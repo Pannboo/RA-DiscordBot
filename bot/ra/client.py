@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from typing import Any
 
 import httpx
@@ -13,6 +14,8 @@ log = logging.getLogger(__name__)
 
 RA_BASE_URL = "https://retroachievements.org/API"
 DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=10.0)
+MAX_RATE_LIMIT_RETRIES = 3
+DEFAULT_RATE_LIMIT_DELAY = 30.0
 
 
 class RAClient:
@@ -38,11 +41,30 @@ class RAClient:
 
     async def _get(self, path: str, params: dict[str, Any]) -> Any:
         params = {**params, "z": self._username, "y": self._api_key}
-        async with self._sem:
-            r = await self._client.get(path, params=params)
+        for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+            async with self._sem:
+                r = await self._client.get(path, params=params)
+
+            if r.status_code != 429:
+                break
+
+            retry_after = _retry_after_seconds(r)
+            if attempt >= MAX_RATE_LIMIT_RETRIES:
+                log.warning(
+                    "RA %s is still rate-limited after %d retries; skipping this poll",
+                    path,
+                    MAX_RATE_LIMIT_RETRIES,
+                )
+                return None
+
+            delay = retry_after if retry_after is not None else DEFAULT_RATE_LIMIT_DELAY
+            delay += random.uniform(0.0, 2.0)
+            log.warning("RA %s rate-limited; retrying in %.1fs", path, delay)
+            await asyncio.sleep(delay)
+
         if r.status_code != 200:
             log.warning("RA %s returned %s: %s", path, r.status_code, r.text[:200])
-            r.raise_for_status()
+            return None
         # RA occasionally serves text/html for some errors; handle JSON parse defensively.
         try:
             return r.json()
@@ -94,6 +116,18 @@ class RAClient:
         data = await self._get("/API_GetAchievementOfTheWeek.php", {})
         return data if isinstance(data, dict) else None
 
+    async def get_game_list(self, console_id: int) -> list[dict]:
+        """All games on a given console. Stable; cache aggressively.
+
+        We ask for hashes off and patch-required games included so the index
+        matches what users actually see when searching the RA site.
+        """
+        data = await self._get(
+            "/API_GetGameList.php",
+            {"i": console_id, "h": 0, "f": 1},
+        )
+        return data if isinstance(data, list) else []
+
 
 def badge_url(badge_name: str) -> str:
     """Build the asset URL for an achievement badge image."""
@@ -129,3 +163,13 @@ def game_url(game_id: int) -> str:
 
 def user_url(username: str) -> str:
     return f"https://retroachievements.org/user/{username}"
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    value = response.headers.get("Retry-After")
+    if value is None:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return None

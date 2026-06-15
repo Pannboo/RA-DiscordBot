@@ -9,7 +9,11 @@ from sqlalchemy import delete, func, select
 
 from bot.db import get_session
 from bot.db.models import AwardSeen, GuildConfig, User
+from bot.embeds.aotw import aotw_embed
 from bot.embeds.game import game_progress_embed, unlinked_game_embed
+from bot.ra import games_cache
+from bot.ra.consoles import all_console_names, resolve_console
+from bot.ui.achievements_pager import AchievementsPagerView
 from bot.embeds.leaderboard import LeaderRow, leaderboard_embed
 from bot.embeds.vs import VsSide, vs_embed
 from bot.poller import Dispatcher
@@ -96,7 +100,7 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
         username="RA username to look up. Defaults to your linked account.",
     )
     async def profile(interaction: discord.Interaction, username: str | None = None) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(thinking=True)
         target = username
         if not target:
             async with get_session() as session:
@@ -133,11 +137,37 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
         )
         if summary.rank:
             embed.add_field(name="Rank", value=f"#{summary.rank:,}", inline=True)
+        if summary.member_since:
+            embed.add_field(
+                name="Member since",
+                value=(
+                    f"{discord.utils.format_dt(summary.member_since, 'D')} "
+                    f"({discord.utils.format_dt(summary.member_since, 'R')})"
+                ),
+                inline=True,
+            )
         if summary.rich_presence_msg:
             embed.add_field(
                 name="Currently", value=summary.rich_presence_msg, inline=False
             )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed)
+
+    # ---- Achievement of the Week -------------------------------------------
+
+    @ra_group.command(
+        name="aotw",
+        description="Show the current RetroAchievements Achievement of the Week.",
+    )
+    async def aotw(interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        data = await ra.get_achievement_of_the_week()
+        if not data or not (data.get("Achievement") or {}).get("Title"):
+            await interaction.followup.send(
+                "Couldn't fetch the Achievement of the Week right now. Try again in a bit.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(embed=aotw_embed(data), ephemeral=True)
 
     # ---- Game lookup --------------------------------------------------------
 
@@ -145,18 +175,56 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
         name="game",
         description="Show a game's set info and your progress.",
     )
-    @app_commands.describe(game="RA game id or full retroachievements.org game URL")
-    async def game_lookup(interaction: discord.Interaction, game: str) -> None:
+    @app_commands.describe(
+        game="RA game id, full game URL, or game name (e.g. 'Bully')",
+        console="Console name — required when searching by name (e.g. 'PlayStation 2')",
+    )
+    async def game_lookup(
+        interaction: discord.Interaction,
+        game: str,
+        console: str | None = None,
+    ) -> None:
         game_id = _parse_game_id(game)
-        if game_id is None:
-            await interaction.response.send_message(
-                "Pass a numeric RA game id (e.g. `1`) or a full game URL "
-                "(e.g. `https://retroachievements.org/game/1`).",
-                ephemeral=True,
-            )
-            return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
+
+        # Name-based search: resolve via the per-console game-list cache.
+        if game_id is None:
+            if not console:
+                await interaction.followup.send(
+                    "Searching by name needs a console. Pass `console:` "
+                    "(e.g. `console: PlayStation 2`), or use a numeric RA id / game URL.",
+                    ephemeral=True,
+                )
+                return
+            resolved = resolve_console(console)
+            if resolved is None:
+                await interaction.followup.send(
+                    f"Couldn't find a console matching **{console}**. Try the autocomplete.",
+                    ephemeral=True,
+                )
+                return
+            console_name, console_id = resolved
+            games = await games_cache.get_games(ra, console_id)
+            matches = games_cache.search(games, game, limit=5)
+            if not matches:
+                await interaction.followup.send(
+                    f"No games on **{console_name}** matched **{game}**.",
+                    ephemeral=True,
+                )
+                return
+            # Use the top-ranked match. If there are multiple, hint the others
+            # so the user can disambiguate by passing the full title.
+            game_id = matches[0].id
+            disambiguation = ""
+            if len(matches) > 1 and matches[0].title.lower() != game.strip().lower():
+                others = ", ".join(f"`{m.title}`" for m in matches[1:4])
+                disambiguation = (
+                    f"\n_Other matches on {console_name}: {others}_"
+                )
+
+        else:
+            disambiguation = ""
 
         # If the caller is linked, query against their RA account so progress lands.
         ra_username: str | None = None
@@ -177,7 +245,29 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
             embed = game_progress_embed(info, ra_username)
         else:
             embed = unlinked_game_embed(info)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+
+        view: discord.ui.View | None = None
+        if info.achievements:
+            view = AchievementsPagerView(info, ra_username, owner_id=interaction.user.id)
+
+        await interaction.followup.send(
+            content=disambiguation or None,
+            embed=embed,
+            view=view,
+            ephemeral=True,
+        )
+
+    @game_lookup.autocomplete("console")
+    async def _console_autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        names = all_console_names()
+        q = (current or "").strip().lower()
+        if q:
+            filtered = [n for n in names if q in n.lower()]
+        else:
+            filtered = names
+        return [app_commands.Choice(name=n, value=n) for n in filtered[:25]]
 
     # ---- Leaderboard --------------------------------------------------------
 
@@ -192,7 +282,7 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
             app_commands.Choice(name="Softcore points", value="softcore"),
             app_commands.Choice(name="RetroPoints", value="retropoints"),
             app_commands.Choice(name="Masteries", value="masteries"),
-            app_commands.Choice(name="Beaten (not yet mastered)", value="beatens"),
+            app_commands.Choice(name="Beaten (Hardcore)", value="beatens"),
         ]
     )
     @app_commands.guild_only()
@@ -223,22 +313,20 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
                 )
                 counts = {(ra_user, kind): cnt for ra_user, kind, cnt in rows.all()}
 
-        def _row(u: User) -> LeaderRow:
-            mastered = counts.get((u.ra_username, "mastered"), 0)
-            beaten_raw = counts.get((u.ra_username, "beaten_hc"), 0)
-            # RA awards a "beaten" alongside every mastery; subtract so the
-            # displayed numbers are disjoint (beaten-but-not-yet-mastered).
-            return LeaderRow(
+        # Beaten count is the raw beaten_hc total (which includes mastered games)
+        # to mirror how RA displays these stats on user profiles.
+        rows = [
+            LeaderRow(
                 discord_id=u.discord_id,
                 ra_username=u.ra_username,
                 hardcore=u.total_points,
                 softcore=u.total_softcore_points,
                 retropoints=u.total_retro_points,
-                masteries=mastered,
-                beatens=max(0, beaten_raw - mastered),
+                masteries=counts.get((u.ra_username, "mastered"), 0),
+                beatens=counts.get((u.ra_username, "beaten_hc"), 0),
             )
-
-        rows = [_row(u) for u in users]
+            for u in users
+        ]
         rows.sort(
             key=lambda r: {
                 "hardcore": r.hardcore,
@@ -320,8 +408,6 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
             }
 
         def _side(summary, user) -> VsSide:  # noqa: ANN001
-            mastered = counts.get((user.ra_username, "mastered"), 0)
-            beaten_raw = counts.get((user.ra_username, "beaten_hc"), 0)
             return VsSide(
                 ra_username=summary.user,
                 pic=summary.user_pic,
@@ -329,9 +415,9 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
                 softcore=summary.total_softcore_points,
                 retropoints=summary.total_true_points,
                 rank=summary.rank,
-                masteries=mastered,
-                # Disjoint with masteries: see comment in /ra top.
-                beatens=max(0, beaten_raw - mastered),
+                masteries=counts.get((user.ra_username, "mastered"), 0),
+                # Raw beaten_hc, includes mastered games — matches RA's display.
+                beatens=counts.get((user.ra_username, "beaten_hc"), 0),
             )
 
         left_side = _side(left_summary, left_user)

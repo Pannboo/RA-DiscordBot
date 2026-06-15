@@ -19,7 +19,12 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 import discord
+from sqlalchemy import delete, select
 
+from bot.db import get_session
+from bot.db.models import AOTWPin, AOTWState
+from bot.embeds.aotw import aotw_embed
+from bot.poller.dispatcher import Dispatcher
 from bot.ra.client import RAClient
 
 log = logging.getLogger(__name__)
@@ -37,9 +42,15 @@ ACTIVITY_MAX_LEN = 128
 
 
 class AOTWPresence:
-    def __init__(self, bot: discord.Client, ra: RAClient) -> None:
+    def __init__(
+        self,
+        bot: discord.Client,
+        ra: RAClient,
+        dispatcher: Dispatcher | None = None,
+    ) -> None:
         self._bot = bot
         self._ra = ra
+        self._dispatcher = dispatcher
         self._refresh_task: asyncio.Task | None = None
         self._rotate_task: asyncio.Task | None = None
         self._stop = asyncio.Event()
@@ -140,7 +151,111 @@ class AOTWPresence:
             log.exception("initial change_presence failed")
 
         log.info("aotw refreshed: %s / %s", ach_title, game_title)
+
+        # Broadcast + pin only when the achievement actually changed.
+        ach_id = (achievement.get("ID") if isinstance(achievement, dict) else None)
+        if self._dispatcher is not None and ach_id:
+            try:
+                await self._maybe_broadcast(int(ach_id), data)
+            except Exception:
+                log.exception("aotw broadcast failed")
+
         return self._delay_until_next_rollover(data.get("StartAt"))
+
+    async def _maybe_broadcast(self, ach_id: int, payload: dict) -> None:
+        """Broadcast + pin if this AOTW is new (different achievement_id from last state)."""
+        async with get_session() as session:
+            state = await session.get(AOTWState, 1)
+            if state is not None and state.achievement_id == ach_id:
+                return  # already announced
+
+        embed = aotw_embed(payload)
+        assert self._dispatcher is not None
+        messages = await self._dispatcher.broadcast(embed)
+        if not messages:
+            log.info("aotw broadcast had no targets; skipping pin/state update")
+            return
+
+        # Unpin previous AOTW posts per guild, then pin the new one.
+        async with get_session() as session:
+            previous_pins = (
+                (await session.execute(select(AOTWPin))).scalars().all()
+            )
+        prev_by_guild = {p.guild_id: p for p in previous_pins}
+
+        for msg in messages:
+            if msg.guild is None:
+                continue
+            prev = prev_by_guild.get(msg.guild.id)
+            if prev is not None:
+                await self._unpin_previous(msg.guild, prev)
+            try:
+                await msg.pin(reason="Achievement of the Week")
+            except discord.Forbidden:
+                log.warning(
+                    "Cannot pin AOTW in #%s (%s): missing Manage Messages",
+                    msg.channel,
+                    msg.guild,
+                )
+            except discord.DiscordException:
+                log.exception("Failed to pin AOTW in %s", msg.guild)
+
+        # Persist new state and per-guild pins.
+        async with get_session() as session:
+            state = await session.get(AOTWState, 1)
+            if state is None:
+                session.add(
+                    AOTWState(
+                        id=1,
+                        achievement_id=ach_id,
+                        posted_at=datetime.now(timezone.utc),
+                    )
+                )
+            else:
+                state.achievement_id = ach_id
+                state.posted_at = datetime.now(timezone.utc)
+
+            # Replace pin records for guilds we just posted to.
+            guild_ids = [msg.guild.id for msg in messages if msg.guild is not None]
+            if guild_ids:
+                await session.execute(
+                    delete(AOTWPin).where(AOTWPin.guild_id.in_(guild_ids))
+                )
+            for msg in messages:
+                if msg.guild is None:
+                    continue
+                session.add(
+                    AOTWPin(
+                        guild_id=msg.guild.id,
+                        channel_id=msg.channel.id,
+                        message_id=msg.id,
+                        achievement_id=ach_id,
+                    )
+                )
+            await session.commit()
+
+        log.info("aotw broadcast to %d guild(s), pinned new message", len(messages))
+
+    async def _unpin_previous(self, guild: discord.Guild, pin: AOTWPin) -> None:
+        channel = guild.get_channel(pin.channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            return
+        try:
+            msg = await channel.fetch_message(pin.message_id)
+        except discord.NotFound:
+            return
+        except discord.Forbidden:
+            log.warning("Cannot fetch previous AOTW message in #%s (%s)", channel, guild)
+            return
+        except discord.DiscordException:
+            log.exception("Failed to fetch previous AOTW message in %s", guild)
+            return
+        try:
+            await msg.unpin(reason="Rotating Achievement of the Week")
+        except discord.Forbidden:
+            log.warning("Cannot unpin previous AOTW in #%s (%s)", channel, guild)
+        except discord.DiscordException:
+            log.exception("Failed to unpin previous AOTW in %s", guild)
 
     @staticmethod
     def _delay_until_next_rollover(start_at_str: str | None) -> float:

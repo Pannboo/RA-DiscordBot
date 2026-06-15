@@ -57,5 +57,46 @@ class Dispatcher:
         for channel in targets:
             try:
                 await channel.send(embed=embed, allowed_mentions=allowed)
+            except discord.Forbidden:
+                log.warning(
+                    "Cannot post to #%s in %s: missing View Channel, Send Messages, or Embed Links",
+                    channel,
+                    channel.guild,
+                )
             except discord.DiscordException:
                 log.exception("Failed to post to %s in %s", channel, channel.guild)
+
+    async def broadcast(
+        self,
+        embed: discord.Embed,
+    ) -> list[discord.Message]:
+        """Post an embed to every configured guild's announce channel.
+
+        Unlike `post`, this is not scoped to a specific user — it's for
+        server-wide announcements (e.g. Achievement of the Week). Returns the
+        sent `discord.Message` objects so callers can pin or follow up.
+        """
+        if not self._cache:
+            await self.refresh()
+
+        allowed = discord.AllowedMentions.none()
+        sent: list[discord.Message] = []
+        for guild in self._bot.guilds:
+            channel_id = self._cache.get(guild.id)
+            if not channel_id:
+                continue
+            channel = guild.get_channel(channel_id)
+            if not isinstance(channel, discord.TextChannel):
+                continue
+            try:
+                msg = await channel.send(embed=embed, allowed_mentions=allowed)
+                sent.append(msg)
+            except discord.Forbidden:
+                log.warning(
+                    "Cannot broadcast to #%s in %s: missing View Channel, Send Messages, or Embed Links",
+                    channel,
+                    channel.guild,
+                )
+            except discord.DiscordException:
+                log.exception("Failed to broadcast to %s in %s", channel, channel.guild)
+        return sent

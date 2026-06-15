@@ -34,3 +34,71 @@ def format_console(name: str) -> str:
         return ""
     url = console_url(name)
     return f"[{name}]({url})" if url else name
+
+
+def all_console_names() -> list[str]:
+    """Sorted list of every console name we know about. Used for autocomplete."""
+    return sorted(_id_by_name.keys())
+
+
+def resolve_console(query: str) -> tuple[str, int] | None:
+    """Best-effort match of a free-text console query against the loaded list.
+
+    Returns `(canonical_name, id)` if any console matches case-insensitively,
+    else None. Prefers exact (case-insensitive) match, then prefix, then
+    substring — and finally a small set of common shorthands so users can
+    type "PS2" instead of "PlayStation 2".
+    """
+    if not query:
+        return None
+    q = query.strip()
+    if not q:
+        return None
+
+    q_lower = q.lower()
+    # Exact (case-insensitive)
+    for name, cid in _id_by_name.items():
+        if name.lower() == q_lower:
+            return name, cid
+
+    # Common shorthands → canonical RA console names. Kept tiny on purpose;
+    # anything beyond this just lets the prefix/substring pass do the work.
+    shorthands = {
+        "ps1": "playstation",
+        "psx": "playstation",
+        "ps2": "playstation 2",
+        "psp": "playstation portable",
+        "snes": "snes/super famicom",
+        "nes": "nes/famicom",
+        "n64": "nintendo 64",
+        "gb": "game boy",
+        "gbc": "game boy color",
+        "gba": "game boy advance",
+        "ds": "nintendo ds",
+        "3ds": "nintendo 3ds",
+        "md": "mega drive/genesis",
+        "genesis": "mega drive/genesis",
+        "saturn": "sega saturn",
+        "dreamcast": "dreamcast",
+        "sms": "master system",
+        "gg": "game gear",
+        "32x": "sega 32x",
+        "cd": "sega cd",
+    }
+    canonical = shorthands.get(q_lower)
+    if canonical is not None:
+        for name, cid in _id_by_name.items():
+            if name.lower() == canonical:
+                return name, cid
+
+    # Prefix
+    for name, cid in _id_by_name.items():
+        if name.lower().startswith(q_lower):
+            return name, cid
+
+    # Substring
+    for name, cid in _id_by_name.items():
+        if q_lower in name.lower():
+            return name, cid
+
+    return None

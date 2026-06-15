@@ -41,7 +41,7 @@ class RABot(commands.Bot):
         self.dispatcher_ = Dispatcher(self)
         self.scheduler = PollScheduler(self.ra, self.dispatcher_)
         self.presence = PresenceTracker(self)
-        self.aotw = AOTWPresence(self, self.ra)
+        self.aotw = AOTWPresence(self, self.ra, self.dispatcher_)
 
     async def setup_hook(self) -> None:
         init_engine()
