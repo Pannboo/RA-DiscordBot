@@ -99,12 +99,58 @@ class RAClient:
     async def get_game_info_and_user_progress(
         self, username: str, game_id: int
     ) -> GameInfoProgress | None:
+        """User progress + achievement set. RA returns `type` as null on this
+        endpoint for every game, so callers that need progression / missable /
+        win-condition markers should use `get_game_with_types` instead, which
+        merges in data from `GetGameExtended`.
+        """
         data = await self._get(
             "/API_GetGameInfoAndUserProgress.php", {"u": username, "g": game_id}
         )
         if not isinstance(data, dict):
             return None
         return GameInfoProgress.model_validate(data)
+
+    async def get_game_extended(self, game_id: int) -> dict | None:
+        """Full set metadata, including achievement `type` tags
+        (progression / win_condition / missable). No per-user progress.
+        """
+        data = await self._get("/API_GetGameExtended.php", {"i": game_id})
+        return data if isinstance(data, dict) else None
+
+    async def get_game_with_types(
+        self, username: str, game_id: int
+    ) -> GameInfoProgress | None:
+        """User progress with achievement type tags merged in.
+
+        Issues both API calls concurrently and patches `type` onto each
+        achievement using the extended payload. Returns None only when the
+        primary progress lookup fails — missing type data is non-fatal.
+        """
+        progress_task = asyncio.create_task(
+            self.get_game_info_and_user_progress(username, game_id)
+        )
+        extended_task = asyncio.create_task(self.get_game_extended(game_id))
+        info = await progress_task
+        if info is None:
+            extended_task.cancel()
+            return None
+        try:
+            extended = await extended_task
+        except Exception:  # noqa: BLE001
+            extended = None
+        if extended:
+            ext_achievements = extended.get("Achievements") or {}
+            types_by_id: dict[int, str] = {}
+            for raw in ext_achievements.values():
+                ach_id = raw.get("ID")
+                t = raw.get("type")
+                if ach_id is not None and t:
+                    types_by_id[int(ach_id)] = str(t)
+            for ach in info.achievements:
+                if ach.type is None and ach.id in types_by_id:
+                    ach.type = types_by_id[ach.id]
+        return info
 
     async def get_console_ids(self) -> list[dict]:
         """Fetch the canonical RA console list. Stable; cache at startup."""

@@ -4,7 +4,8 @@ The default view is a compact list of ~8 achievements with title, points and
 your unlock state, so you can scan a whole set fast. Drill into any single
 achievement via the "Open one…" dropdown to see its badge, full description
 and award stats. A "Game card" button always brings you back to the set
-overview. Ephemeral and owned by the invoking user.
+overview. A "Filter" dropdown narrows the list to one achievement type.
+Ephemeral and owned by the invoking user.
 """
 
 from __future__ import annotations
@@ -39,6 +40,14 @@ TYPE_LABEL: dict[str, str] = {
     "win_condition": "Win Condition",
     "missable": "Missable",
 }
+FILTER_ALL = "all"
+FILTER_CHOICES: list[tuple[str, str, str]] = [
+    # (value, label, emoji)
+    (FILTER_ALL, "All achievements", "📜"),
+    ("progression", "Progression only", "🎯"),
+    ("win_condition", "Win Condition only", "🏁"),
+    ("missable", "Missable only", "⚠️"),
+]
 
 
 def _status_emoji(ach: AchievementInfo, linked: bool) -> str:
@@ -67,18 +76,19 @@ def _truncate(s: str, n: int) -> str:
 def _list_embed(
     game: GameInfoProgress,
     achievements: list[AchievementInfo],
+    filtered: list[tuple[int, AchievementInfo]],
     page: int,
     page_count: int,
     ra_username: str | None,
+    filter_value: str,
 ) -> discord.Embed:
     start = page * PAGE_SIZE
-    end = min(start + PAGE_SIZE, len(achievements))
+    end = min(start + PAGE_SIZE, len(filtered))
     linked = ra_username is not None
 
     lines: list[str] = []
     seen_types: set[str] = set()
-    for i in range(start, end):
-        ach = achievements[i]
+    for orig_idx, ach in filtered[start:end]:
         status = _status_emoji(ach, linked)
         marker = _type_marker(ach)
         if marker and ach.type:
@@ -86,7 +96,7 @@ def _list_embed(
         title = ach.title or "Untitled"
         marker_suffix = f" {marker}" if marker else ""
         head = (
-            f"{status} **{i + 1}. [{title}]({achievement_url(ach.id)})**"
+            f"{status} **{orig_idx + 1}. [{title}]({achievement_url(ach.id)})**"
             f"{marker_suffix} — `{ach.points} pts`"
         )
         if ach.true_ratio:
@@ -94,29 +104,45 @@ def _list_embed(
         desc = _truncate(ach.description or "", LIST_DESC_TRUNCATE)
         lines.append(head + (f"\n> {desc}" if desc else ""))
 
+    if filter_value == FILTER_ALL:
+        title_suffix = ""
+    else:
+        title_suffix = f" — {TYPE_EMOJI.get(filter_value, '')} {TYPE_LABEL.get(filter_value, filter_value)}"
+
+    description = (
+        "\n\n".join(lines)
+        if lines
+        else f"*No {TYPE_LABEL.get(filter_value, filter_value).lower()} achievements in this set.*"
+        if filter_value != FILTER_ALL
+        else "*This set has no achievements yet.*"
+    )
+
     embed = discord.Embed(
-        title=f"{game.title} — Achievements",
+        title=f"{game.title} — Achievements{title_suffix}",
         url=game_url(game.game_id),
-        description="\n\n".join(lines) or "*This set has no achievements yet.*",
+        description=description,
         color=ACHIEVEMENT_COLOR,
     )
     if game.image_icon:
         embed.set_thumbnail(url=game_icon_url(game.image_icon))
 
-    summary_bits: list[str] = [f"{len(achievements)} in set"]
+    summary_bits: list[str] = []
+    if filter_value == FILTER_ALL:
+        summary_bits.append(f"{len(achievements)} in set")
+    else:
+        summary_bits.append(f"{len(filtered)} of {len(achievements)} match filter")
     if game.console_name:
         summary_bits.append(format_console(game.console_name))
     if linked:
-        hc = sum(1 for a in achievements if a.date_earned_hardcore is not None)
+        hc = sum(1 for _, a in filtered if a.date_earned_hardcore is not None)
         sc = sum(
             1
-            for a in achievements
+            for _, a in filtered
             if a.date_earned is not None and a.date_earned_hardcore is None
         )
         summary_bits.append(f"🔥 {hc} HC • 💧 {sc} SC")
     embed.add_field(name="​", value=" • ".join(summary_bits), inline=False)
 
-    # Legend: only show keys that actually appear on this page so it stays tight.
     legend_order = ("progression", "win_condition", "missable")
     legend_parts = [
         f"{TYPE_EMOJI[k]} {TYPE_LABEL[k]}" for k in legend_order if k in seen_types
@@ -131,9 +157,12 @@ def _list_embed(
 def _detail_embed(
     game: GameInfoProgress,
     achievement: AchievementInfo,
-    index: int,
-    total: int,
+    position: int,
+    total_in_view: int,
+    original_index: int,
+    total_in_set: int,
     ra_username: str | None,
+    filter_value: str,
 ) -> discord.Embed:
     embed = discord.Embed(
         title=f"🏅  {achievement.title or 'Untitled achievement'}",
@@ -184,7 +213,15 @@ def _detail_embed(
             unlocked = "🔒 Not yet unlocked"
         embed.add_field(name=ra_username, value=unlocked, inline=False)
 
-    footer = f"{game.title} • {game.console_name} • Achievement {index + 1} of {total}"
+    if filter_value == FILTER_ALL:
+        position_str = f"Achievement {original_index + 1} of {total_in_set}"
+    else:
+        label = TYPE_LABEL.get(filter_value, filter_value)
+        position_str = (
+            f"{label} {position + 1} of {total_in_view} "
+            f"(#{original_index + 1} of {total_in_set} in set)"
+        )
+    footer = f"{game.title} • {game.console_name} • {position_str}"
     if achievement.author:
         footer += f" • set by {achievement.author}"
     embed.set_footer(
@@ -195,10 +232,7 @@ def _detail_embed(
 
 
 class _DrillSelect(discord.ui.Select["AchievementsPagerView"]):
-    """Dropdown listing the achievements on the current list page.
-
-    Selecting one switches the view into detail mode for that achievement.
-    """
+    """Dropdown listing the achievements visible on the current list page."""
 
     def __init__(self, view: "AchievementsPagerView") -> None:
         super().__init__(
@@ -212,8 +246,8 @@ class _DrillSelect(discord.ui.Select["AchievementsPagerView"]):
 
     def refresh(self) -> None:
         view = self._owner_view
-        achievements = view.achievements
-        if not achievements:
+        filtered = view.filtered
+        if not filtered:
             self.options = [
                 discord.SelectOption(label="No achievements", value="0", default=True)
             ]
@@ -221,18 +255,20 @@ class _DrillSelect(discord.ui.Select["AchievementsPagerView"]):
             return
         self.disabled = False
         start = view.list_page * PAGE_SIZE
-        end = min(start + PAGE_SIZE, len(achievements))
+        end = min(start + PAGE_SIZE, len(filtered))
         options: list[discord.SelectOption] = []
-        for i in range(start, end):
-            ach = achievements[i]
-            label = _truncate(f"{i + 1}. {ach.title or 'Untitled'}", SELECT_LABEL_TRUNCATE)
+        for filt_idx in range(start, end):
+            orig_idx, ach = filtered[filt_idx]
+            label = _truncate(
+                f"{orig_idx + 1}. {ach.title or 'Untitled'}", SELECT_LABEL_TRUNCATE
+            )
             desc = _truncate(ach.description or "", SELECT_DESC_TRUNCATE)
             options.append(
                 discord.SelectOption(
                     label=label,
-                    value=str(i),
+                    value=str(filt_idx),
                     description=desc or None,
-                    default=(view.mode == MODE_DETAIL and view.detail_index == i),
+                    default=(view.mode == MODE_DETAIL and view.detail_index == filt_idx),
                 )
             )
         self.options = options
@@ -241,8 +277,47 @@ class _DrillSelect(discord.ui.Select["AchievementsPagerView"]):
         await self._owner_view._on_drill(interaction, int(self.values[0]))
 
 
+class _FilterSelect(discord.ui.Select["AchievementsPagerView"]):
+    """Narrows the list to one achievement type."""
+
+    def __init__(self, view: "AchievementsPagerView") -> None:
+        super().__init__(
+            placeholder="Filter…",
+            min_values=1,
+            max_values=1,
+            options=[discord.SelectOption(label="placeholder", value=FILTER_ALL)],
+            row=2,
+        )
+        self._owner_view = view
+
+    def refresh(self) -> None:
+        view = self._owner_view
+        counts = view.type_counts
+        options: list[discord.SelectOption] = []
+        for value, label, emoji in FILTER_CHOICES:
+            if value == FILTER_ALL:
+                total = len(view.achievements)
+                description = f"{total} achievement{'s' if total != 1 else ''}"
+            else:
+                n = counts.get(value, 0)
+                description = f"{n} achievement{'s' if n != 1 else ''}"
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    value=value,
+                    emoji=emoji,
+                    description=description,
+                    default=(view.filter_value == value),
+                )
+            )
+        self.options = options
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await self._owner_view._on_filter(interaction, self.values[0])
+
+
 class AchievementsPagerView(OwnedView):
-    """Three modes: game card → list (paged) → detail of one achievement."""
+    """Three modes: game card → list (paged, filterable) → detail."""
 
     def __init__(
         self,
@@ -262,9 +337,11 @@ class AchievementsPagerView(OwnedView):
 
         self.mode: str = MODE_GAME
         self.list_page = 0
+        # `detail_index` is an index into `self.filtered` (matches Prev/Next semantics).
         self.detail_index = 0
+        self.filter_value: str = FILTER_ALL
 
-        # ---- Row 0: navigation (contents change per mode) ----
+        # ---- Row 0: navigation ----
         self._btn_game = discord.ui.Button(
             label="🎮 Game card", style=discord.ButtonStyle.secondary, row=0
         )
@@ -290,15 +367,18 @@ class AchievementsPagerView(OwnedView):
         self._btn_next.callback = self._on_next  # type: ignore[assignment]
         self._btn_back_to_list.callback = self._on_back_to_list  # type: ignore[assignment]
 
-        # ---- Row 1: drill-down select (list mode only) ----
-        self._select = _DrillSelect(self)
+        # ---- Row 1: drill-down select ----
+        self._drill_select = _DrillSelect(self)
 
-        # ---- Row 2: external link ----
+        # ---- Row 2: filter select ----
+        self._filter_select = _FilterSelect(self)
+
+        # ---- Row 3: external link ----
         self._btn_open_on_ra = discord.ui.Button(
             label="Open on RA",
             style=discord.ButtonStyle.link,
             url=game_url(game.game_id),
-            row=2,
+            row=3,
         )
 
         self._rebuild()
@@ -306,10 +386,31 @@ class AchievementsPagerView(OwnedView):
     # ---- state --------------------------------------------------------------
 
     @property
+    def filtered(self) -> list[tuple[int, AchievementInfo]]:
+        """Achievements matching the active filter, paired with their index in the full set."""
+        if self.filter_value == FILTER_ALL:
+            return list(enumerate(self.achievements))
+        target = self.filter_value
+        return [
+            (i, a)
+            for i, a in enumerate(self.achievements)
+            if a.type and a.type.lower() == target
+        ]
+
+    @property
+    def type_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for a in self.achievements:
+            if a.type:
+                counts[a.type.lower()] = counts.get(a.type.lower(), 0) + 1
+        return counts
+
+    @property
     def page_count(self) -> int:
-        if not self.achievements:
+        n = len(self.filtered)
+        if n == 0:
             return 1
-        return (len(self.achievements) + PAGE_SIZE - 1) // PAGE_SIZE
+        return (n + PAGE_SIZE - 1) // PAGE_SIZE
 
     def _rebuild(self) -> None:
         """Reset items to match the current mode. Buttons are re-added every
@@ -331,19 +432,25 @@ class AchievementsPagerView(OwnedView):
             self.add_item(self._btn_next)
             self._btn_prev.disabled = self.list_page <= 0
             self._btn_next.disabled = self.list_page >= self.page_count - 1
-            self._select.refresh()
-            self.add_item(self._select)
+            self._drill_select.refresh()
+            self.add_item(self._drill_select)
+            self._filter_select.refresh()
+            self.add_item(self._filter_select)
             self.add_item(self._btn_open_on_ra)
             return
 
         # MODE_DETAIL
+        filtered = self.filtered
+        total = len(filtered)
         self.add_item(self._btn_back_to_list)
         self.add_item(self._btn_prev)
-        self._btn_counter.label = f"{self.detail_index + 1} / {len(self.achievements)}"
+        self._btn_counter.label = (
+            f"{self.detail_index + 1} / {total}" if total else "0 / 0"
+        )
         self.add_item(self._btn_counter)
         self.add_item(self._btn_next)
         self._btn_prev.disabled = self.detail_index <= 0
-        self._btn_next.disabled = self.detail_index >= len(self.achievements) - 1
+        self._btn_next.disabled = self.detail_index >= total - 1
         self.add_item(self._btn_open_on_ra)
 
     def current_embed(self) -> discord.Embed:
@@ -355,16 +462,29 @@ class AchievementsPagerView(OwnedView):
             return _list_embed(
                 self.game,
                 self.achievements,
+                self.filtered,
                 self.list_page,
                 self.page_count,
                 self.ra_username,
+                self.filter_value,
             )
+        filtered = self.filtered
+        if not filtered:
+            return discord.Embed(
+                title=self.game.title,
+                description="Nothing to show with the current filter.",
+                color=ACHIEVEMENT_COLOR,
+            )
+        orig_idx, ach = filtered[self.detail_index]
         return _detail_embed(
             self.game,
-            self.achievements[self.detail_index],
+            ach,
             self.detail_index,
+            len(filtered),
+            orig_idx,
             len(self.achievements),
             self.ra_username,
+            self.filter_value,
         )
 
     async def _render(self, interaction: discord.Interaction) -> None:
@@ -384,8 +504,7 @@ class AchievementsPagerView(OwnedView):
 
     async def _on_back_to_list(self, interaction: discord.Interaction) -> None:
         self.mode = MODE_LIST
-        # Land on the page containing the achievement we just left, so context
-        # is preserved when bouncing in and out of detail.
+        # Land on the page containing the achievement we just left.
         self.list_page = self.detail_index // PAGE_SIZE
         await self._render(interaction)
 
@@ -401,11 +520,23 @@ class AchievementsPagerView(OwnedView):
             self.list_page = min(self.page_count - 1, self.list_page + 1)
         elif self.mode == MODE_DETAIL:
             self.detail_index = min(
-                len(self.achievements) - 1, self.detail_index + 1
+                max(0, len(self.filtered) - 1), self.detail_index + 1
             )
         await self._render(interaction)
 
     async def _on_drill(self, interaction: discord.Interaction, index: int) -> None:
         self.mode = MODE_DETAIL
-        self.detail_index = max(0, min(index, len(self.achievements) - 1))
+        total = len(self.filtered)
+        self.detail_index = max(0, min(index, total - 1)) if total else 0
+        await self._render(interaction)
+
+    async def _on_filter(self, interaction: discord.Interaction, value: str) -> None:
+        """Changing filter snaps back to the list at page 0 — predictable,
+        and avoids weirdness when the previously-viewed achievement isn't in
+        the new filter."""
+        self.filter_value = value
+        self.list_page = 0
+        self.detail_index = 0
+        if self.mode != MODE_GAME:
+            self.mode = MODE_LIST
         await self._render(interaction)
