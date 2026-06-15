@@ -186,7 +186,15 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
     ) -> None:
         game_id = _parse_game_id(game)
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        # Reply visibility is per-guild: admins flip it via the admin hub.
+        # DMs / no guild → always ephemeral.
+        public = False
+        if interaction.guild is not None:
+            async with get_session() as session:
+                gcfg = await session.get(GuildConfig, interaction.guild.id)
+            public = bool(gcfg and gcfg.game_lookup_public)
+
+        await interaction.response.defer(ephemeral=not public, thinking=True)
 
         # Name-based search: resolve via the per-console game-list cache.
         if game_id is None:
@@ -254,7 +262,7 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
             content=disambiguation or None,
             embed=embed,
             view=view,
-            ephemeral=True,
+            ephemeral=not public,
         )
 
     @game_lookup.autocomplete("console")

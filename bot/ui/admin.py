@@ -35,6 +35,17 @@ async def build_admin_embed(guild: discord.Guild) -> discord.Embed:
             value="🟢 enabled" if cfg.enabled else "⏸️ paused",
             inline=True,
         )
+
+    game_public = cfg is not None and cfg.game_lookup_public
+    embed.add_field(
+        name="`/ra game` replies",
+        value=(
+            "🌐 public (only the invoker can drive the buttons)"
+            if game_public
+            else "🔒 ephemeral (only the invoker can see)"
+        ),
+        inline=False,
+    )
     return embed
 
 
@@ -66,6 +77,12 @@ class AdminHubView(OwnedView):
         )
         self.manage_button.callback = self._on_manage  # type: ignore[assignment]
         self.add_item(self.manage_button)
+        # Row 2: per-feature toggles.
+        self.game_visibility_button = discord.ui.Button(
+            label="Loading…", style=discord.ButtonStyle.secondary, row=2
+        )
+        self.game_visibility_button.callback = self._on_toggle_game_visibility  # type: ignore[assignment]
+        self.add_item(self.game_visibility_button)
 
     @classmethod
     async def create(
@@ -94,6 +111,17 @@ class AdminHubView(OwnedView):
             self.toggle_button.label = "Resume posting"
             self.toggle_button.disabled = False
             self.toggle_button.style = discord.ButtonStyle.success
+
+        # /ra game visibility toggle — independent of the announce channel.
+        game_public = cfg is not None and cfg.game_lookup_public
+        if game_public:
+            self.game_visibility_button.label = "Make /ra game private"
+            self.game_visibility_button.style = discord.ButtonStyle.secondary
+            self.game_visibility_button.emoji = "🔒"
+        else:
+            self.game_visibility_button.label = "Make /ra game public"
+            self.game_visibility_button.style = discord.ButtonStyle.primary
+            self.game_visibility_button.emoji = "🌐"
 
     @discord.ui.select(
         cls=discord.ui.ChannelSelect,
@@ -152,6 +180,27 @@ class AdminHubView(OwnedView):
             cfg.enabled = not cfg.enabled
             await session.commit()
         await self._dispatcher.refresh()
+        await self._sync_toggle_label()
+        embed = await build_admin_embed(self._guild)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def _on_toggle_game_visibility(self, interaction: discord.Interaction) -> None:
+        async with get_session() as session:
+            cfg = await session.get(GuildConfig, self._guild.id)
+            if cfg is None:
+                # No row yet — create one with the toggle flipped on, even
+                # without an announce channel. /ra game doesn't depend on it.
+                session.add(
+                    GuildConfig(
+                        guild_id=self._guild.id,
+                        announce_channel_id=None,
+                        enabled=False,
+                        game_lookup_public=True,
+                    )
+                )
+            else:
+                cfg.game_lookup_public = not cfg.game_lookup_public
+            await session.commit()
         await self._sync_toggle_label()
         embed = await build_admin_embed(self._guild)
         await interaction.response.edit_message(embed=embed, view=self)

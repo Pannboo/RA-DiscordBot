@@ -46,6 +46,9 @@ class GuildConfig(Base):
     guild_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     announce_channel_id: Mapped[int | None] = mapped_column(BigInteger)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # When True, /ra game replies are posted publicly in the channel
+    # (still owner-locked for interactions) instead of ephemerally.
+    game_lookup_public: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
 
 
