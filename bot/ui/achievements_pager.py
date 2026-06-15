@@ -27,6 +27,19 @@ MODE_GAME = "game"
 MODE_LIST = "list"
 MODE_DETAIL = "detail"
 
+# Markers for the RA achievement `type` field. Kept distinct from the status
+# emoji set (🔥 💧 🔒 🏅) so they can sit next to each other without confusion.
+TYPE_EMOJI: dict[str, str] = {
+    "progression": "🎯",
+    "win_condition": "🏁",
+    "missable": "⚠️",
+}
+TYPE_LABEL: dict[str, str] = {
+    "progression": "Progression",
+    "win_condition": "Win Condition",
+    "missable": "Missable",
+}
+
 
 def _status_emoji(ach: AchievementInfo, linked: bool) -> str:
     if not linked:
@@ -36,6 +49,13 @@ def _status_emoji(ach: AchievementInfo, linked: bool) -> str:
     if ach.date_earned is not None:
         return "💧"
     return "🔒"
+
+
+def _type_marker(ach: AchievementInfo) -> str:
+    """Inline icon for the achievement type, or empty string when no type."""
+    if not ach.type:
+        return ""
+    return TYPE_EMOJI.get(ach.type.lower(), "")
 
 
 def _truncate(s: str, n: int) -> str:
@@ -56,11 +76,19 @@ def _list_embed(
     linked = ra_username is not None
 
     lines: list[str] = []
+    seen_types: set[str] = set()
     for i in range(start, end):
         ach = achievements[i]
         status = _status_emoji(ach, linked)
+        marker = _type_marker(ach)
+        if marker and ach.type:
+            seen_types.add(ach.type.lower())
         title = ach.title or "Untitled"
-        head = f"{status} **{i + 1}. [{title}]({achievement_url(ach.id)})** — `{ach.points} pts`"
+        marker_suffix = f" {marker}" if marker else ""
+        head = (
+            f"{status} **{i + 1}. [{title}]({achievement_url(ach.id)})**"
+            f"{marker_suffix} — `{ach.points} pts`"
+        )
         if ach.true_ratio:
             head += f" • 💎 `{ach.true_ratio}`"
         desc = _truncate(ach.description or "", LIST_DESC_TRUNCATE)
@@ -88,6 +116,14 @@ def _list_embed(
         summary_bits.append(f"🔥 {hc} HC • 💧 {sc} SC")
     embed.add_field(name="​", value=" • ".join(summary_bits), inline=False)
 
+    # Legend: only show keys that actually appear on this page so it stays tight.
+    legend_order = ("progression", "win_condition", "missable")
+    legend_parts = [
+        f"{TYPE_EMOJI[k]} {TYPE_LABEL[k]}" for k in legend_order if k in seen_types
+    ]
+    if legend_parts:
+        embed.add_field(name="Key", value=" • ".join(legend_parts), inline=False)
+
     embed.set_footer(text=f"Page {page + 1} of {page_count}")
     return embed
 
@@ -114,9 +150,12 @@ def _detail_embed(
     embed.add_field(name="Points", value=points_value, inline=True)
 
     if achievement.type:
+        key = achievement.type.lower()
+        pretty = TYPE_LABEL.get(key, achievement.type.replace("_", " ").title())
+        icon = TYPE_EMOJI.get(key, "")
         embed.add_field(
             name="Type",
-            value=achievement.type.replace("_", " ").title(),
+            value=f"{icon} {pretty}".strip(),
             inline=True,
         )
 
