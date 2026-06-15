@@ -1,9 +1,10 @@
-"""Paginated, ephemeral view of every achievement in a game set.
+"""List-view achievement browser for `/ra game`.
 
-Page 0 is the game card (set info + your progress); pages 1..N are one
-achievement each, so Discord can render each badge as the embed thumbnail.
-The select dropdown lets the user jump anywhere within a 25-achievement
-window of the current position. Owned by the invoking user.
+The default view is a compact list of ~8 achievements with title, points and
+your unlock state, so you can scan a whole set fast. Drill into any single
+achievement via the "Open one…" dropdown to see its badge, full description
+and award stats. A "Game card" button always brings you back to the set
+overview. Ephemeral and owned by the invoking user.
 """
 
 from __future__ import annotations
@@ -17,10 +18,81 @@ from bot.ra.types import AchievementInfo, GameInfoProgress
 from bot.ui.common import OwnedView
 
 ACHIEVEMENT_COLOR = 0xCFB53B
-SELECT_WINDOW = 25  # Discord's per-select option cap
+PAGE_SIZE = 8
+LIST_DESC_TRUNCATE = 90
+SELECT_LABEL_TRUNCATE = 97
+SELECT_DESC_TRUNCATE = 97
+
+MODE_GAME = "game"
+MODE_LIST = "list"
+MODE_DETAIL = "detail"
 
 
-def _achievement_embed(
+def _status_emoji(ach: AchievementInfo, linked: bool) -> str:
+    if not linked:
+        return "🏅"
+    if ach.date_earned_hardcore is not None:
+        return "🔥"
+    if ach.date_earned is not None:
+        return "💧"
+    return "🔒"
+
+
+def _truncate(s: str, n: int) -> str:
+    if len(s) <= n:
+        return s
+    return s[: n - 1].rstrip() + "…"
+
+
+def _list_embed(
+    game: GameInfoProgress,
+    achievements: list[AchievementInfo],
+    page: int,
+    page_count: int,
+    ra_username: str | None,
+) -> discord.Embed:
+    start = page * PAGE_SIZE
+    end = min(start + PAGE_SIZE, len(achievements))
+    linked = ra_username is not None
+
+    lines: list[str] = []
+    for i in range(start, end):
+        ach = achievements[i]
+        status = _status_emoji(ach, linked)
+        title = ach.title or "Untitled"
+        head = f"{status} **{i + 1}. [{title}]({achievement_url(ach.id)})** — `{ach.points} pts`"
+        if ach.true_ratio:
+            head += f" • 💎 `{ach.true_ratio}`"
+        desc = _truncate(ach.description or "", LIST_DESC_TRUNCATE)
+        lines.append(head + (f"\n> {desc}" if desc else ""))
+
+    embed = discord.Embed(
+        title=f"{game.title} — Achievements",
+        url=game_url(game.game_id),
+        description="\n\n".join(lines) or "*This set has no achievements yet.*",
+        color=ACHIEVEMENT_COLOR,
+    )
+    if game.image_icon:
+        embed.set_thumbnail(url=game_icon_url(game.image_icon))
+
+    summary_bits: list[str] = [f"{len(achievements)} in set"]
+    if game.console_name:
+        summary_bits.append(format_console(game.console_name))
+    if linked:
+        hc = sum(1 for a in achievements if a.date_earned_hardcore is not None)
+        sc = sum(
+            1
+            for a in achievements
+            if a.date_earned is not None and a.date_earned_hardcore is None
+        )
+        summary_bits.append(f"🔥 {hc} HC • 💧 {sc} SC")
+    embed.add_field(name="​", value=" • ".join(summary_bits), inline=False)
+
+    embed.set_footer(text=f"Page {page + 1} of {page_count}")
+    return embed
+
+
+def _detail_embed(
     game: GameInfoProgress,
     achievement: AchievementInfo,
     index: int,
@@ -42,8 +114,11 @@ def _achievement_embed(
     embed.add_field(name="Points", value=points_value, inline=True)
 
     if achievement.type:
-        pretty = achievement.type.replace("_", " ").title()
-        embed.add_field(name="Type", value=pretty, inline=True)
+        embed.add_field(
+            name="Type",
+            value=achievement.type.replace("_", " ").title(),
+            inline=True,
+        )
 
     if achievement.num_awarded:
         rate = ""
@@ -68,12 +143,9 @@ def _achievement_embed(
             )
         else:
             unlocked = "🔒 Not yet unlocked"
-        embed.add_field(name=f"{ra_username}", value=unlocked, inline=False)
+        embed.add_field(name=ra_username, value=unlocked, inline=False)
 
-    footer = (
-        f"{game.title} • {game.console_name} • "
-        f"Achievement {index} of {total}"
-    )
+    footer = f"{game.title} • {game.console_name} • Achievement {index + 1} of {total}"
     if achievement.author:
         footer += f" • set by {achievement.author}"
     embed.set_footer(
@@ -83,10 +155,15 @@ def _achievement_embed(
     return embed
 
 
-class _JumpSelect(discord.ui.Select["AchievementsPagerView"]):
+class _DrillSelect(discord.ui.Select["AchievementsPagerView"]):
+    """Dropdown listing the achievements on the current list page.
+
+    Selecting one switches the view into detail mode for that achievement.
+    """
+
     def __init__(self, view: "AchievementsPagerView") -> None:
         super().__init__(
-            placeholder="Jump to achievement…",
+            placeholder="🔍 Open one…",
             min_values=1,
             max_values=1,
             options=[discord.SelectOption(label="placeholder", value="0")],
@@ -97,51 +174,36 @@ class _JumpSelect(discord.ui.Select["AchievementsPagerView"]):
     def refresh(self) -> None:
         view = self._owner_view
         achievements = view.achievements
-        total = len(achievements)
-        if total == 0:
+        if not achievements:
             self.options = [
                 discord.SelectOption(label="No achievements", value="0", default=True)
             ]
             self.disabled = True
             return
         self.disabled = False
-        # Window is 1-indexed against achievements (page 0 is the game card).
-        # Center the window around the current achievement index, clamped.
-        current_ach_idx = max(0, view.page - 1)
-        half = SELECT_WINDOW // 2
-        start = max(0, min(current_ach_idx - half, total - SELECT_WINDOW))
-        start = max(0, start)
-        end = min(total, start + SELECT_WINDOW)
+        start = view.list_page * PAGE_SIZE
+        end = min(start + PAGE_SIZE, len(achievements))
         options: list[discord.SelectOption] = []
         for i in range(start, end):
             ach = achievements[i]
-            label = f"{i + 1}. {ach.title or 'Untitled'}"
-            if len(label) > 100:
-                label = label[:97] + "…"
-            desc = ach.description or ""
-            if len(desc) > 100:
-                desc = desc[:97] + "…"
+            label = _truncate(f"{i + 1}. {ach.title or 'Untitled'}", SELECT_LABEL_TRUNCATE)
+            desc = _truncate(ach.description or "", SELECT_DESC_TRUNCATE)
             options.append(
                 discord.SelectOption(
                     label=label,
-                    value=str(i + 1),  # +1 because page 0 = game card
+                    value=str(i),
                     description=desc or None,
-                    default=(view.page == i + 1),
+                    default=(view.mode == MODE_DETAIL and view.detail_index == i),
                 )
             )
         self.options = options
-        self.placeholder = (
-            "Jump to achievement…"
-            if total <= SELECT_WINDOW
-            else f"Jump to achievement… ({start + 1}–{end} of {total})"
-        )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        await self._owner_view.go_to(interaction, int(self.values[0]))
+        await self._owner_view._on_drill(interaction, int(self.values[0]))
 
 
 class AchievementsPagerView(OwnedView):
-    """Pager over [game card, ach #1, ach #2, …]. `page == 0` is the game card."""
+    """Three modes: game card → list (paged) → detail of one achievement."""
 
     def __init__(
         self,
@@ -158,102 +220,153 @@ class AchievementsPagerView(OwnedView):
             key=lambda a: (a.display_order, a.id),
         )
         self.ra_username = ra_username
-        self.page = 0  # 0 = game card, 1..N = achievement index +1
 
-        self._first = discord.ui.Button(
-            label="⏮", style=discord.ButtonStyle.secondary, row=0
+        self.mode: str = MODE_GAME
+        self.list_page = 0
+        self.detail_index = 0
+
+        # ---- Row 0: navigation (contents change per mode) ----
+        self._btn_game = discord.ui.Button(
+            label="🎮 Game card", style=discord.ButtonStyle.secondary, row=0
         )
-        self._prev = discord.ui.Button(
+        self._btn_view_list = discord.ui.Button(
+            label="📜 View achievements", style=discord.ButtonStyle.primary, row=0
+        )
+        self._btn_prev = discord.ui.Button(
             label="◀ Prev", style=discord.ButtonStyle.secondary, row=0
         )
-        self._counter = discord.ui.Button(
-            label="Game", style=discord.ButtonStyle.secondary, row=0, disabled=True
+        self._btn_counter = discord.ui.Button(
+            label="—", style=discord.ButtonStyle.secondary, row=0, disabled=True
         )
-        self._next = discord.ui.Button(
+        self._btn_next = discord.ui.Button(
             label="Next ▶", style=discord.ButtonStyle.primary, row=0
         )
-        self._last = discord.ui.Button(
-            label="⏭", style=discord.ButtonStyle.secondary, row=0
+        self._btn_back_to_list = discord.ui.Button(
+            label="⬅ Back to list", style=discord.ButtonStyle.secondary, row=0
         )
-        self._open_game = discord.ui.Button(
+
+        self._btn_game.callback = self._on_game  # type: ignore[assignment]
+        self._btn_view_list.callback = self._on_view_list  # type: ignore[assignment]
+        self._btn_prev.callback = self._on_prev  # type: ignore[assignment]
+        self._btn_next.callback = self._on_next  # type: ignore[assignment]
+        self._btn_back_to_list.callback = self._on_back_to_list  # type: ignore[assignment]
+
+        # ---- Row 1: drill-down select (list mode only) ----
+        self._select = _DrillSelect(self)
+
+        # ---- Row 2: external link ----
+        self._btn_open_on_ra = discord.ui.Button(
             label="Open on RA",
             style=discord.ButtonStyle.link,
             url=game_url(game.game_id),
             row=2,
         )
 
-        self._first.callback = self._on_first  # type: ignore[assignment]
-        self._prev.callback = self._on_prev  # type: ignore[assignment]
-        self._next.callback = self._on_next  # type: ignore[assignment]
-        self._last.callback = self._on_last  # type: ignore[assignment]
+        self._rebuild()
 
-        self.add_item(self._first)
-        self.add_item(self._prev)
-        self.add_item(self._counter)
-        self.add_item(self._next)
-        self.add_item(self._last)
-
-        self._select = _JumpSelect(self)
-        self.add_item(self._select)
-        self.add_item(self._open_game)
-
-        self._refresh_state()
+    # ---- state --------------------------------------------------------------
 
     @property
-    def _last_page(self) -> int:
-        return len(self.achievements)  # max page index
+    def page_count(self) -> int:
+        if not self.achievements:
+            return 1
+        return (len(self.achievements) + PAGE_SIZE - 1) // PAGE_SIZE
 
-    def _refresh_state(self) -> None:
-        last = self._last_page
-        if self.page == 0:
-            self._counter.label = (
-                f"Game · 0 / {last}" if last else "Game"
-            )
-        else:
-            self._counter.label = f"{self.page} / {last}"
-        self._first.disabled = self.page <= 0
-        self._prev.disabled = self.page <= 0
-        self._next.disabled = self.page >= last
-        self._last.disabled = self.page >= last
-        self._select.refresh()
+    def _rebuild(self) -> None:
+        """Reset items to match the current mode. Buttons are re-added every
+        time because Discord views don't support hiding individual items —
+        clearing and re-adding is the cheapest correct option."""
+        self.clear_items()
+
+        if self.mode == MODE_GAME:
+            if self.achievements:
+                self.add_item(self._btn_view_list)
+            self.add_item(self._btn_open_on_ra)
+            return
+
+        if self.mode == MODE_LIST:
+            self.add_item(self._btn_game)
+            self.add_item(self._btn_prev)
+            self._btn_counter.label = f"Page {self.list_page + 1} / {self.page_count}"
+            self.add_item(self._btn_counter)
+            self.add_item(self._btn_next)
+            self._btn_prev.disabled = self.list_page <= 0
+            self._btn_next.disabled = self.list_page >= self.page_count - 1
+            self._select.refresh()
+            self.add_item(self._select)
+            self.add_item(self._btn_open_on_ra)
+            return
+
+        # MODE_DETAIL
+        self.add_item(self._btn_back_to_list)
+        self.add_item(self._btn_prev)
+        self._btn_counter.label = f"{self.detail_index + 1} / {len(self.achievements)}"
+        self.add_item(self._btn_counter)
+        self.add_item(self._btn_next)
+        self._btn_prev.disabled = self.detail_index <= 0
+        self._btn_next.disabled = self.detail_index >= len(self.achievements) - 1
+        self.add_item(self._btn_open_on_ra)
 
     def current_embed(self) -> discord.Embed:
-        if self.page == 0:
+        if self.mode == MODE_GAME:
             if self.ra_username:
                 return game_progress_embed(self.game, self.ra_username)
             return unlinked_game_embed(self.game)
-        if not self.achievements:
-            embed = discord.Embed(
-                title=self.game.title,
-                description="This game has no achievements in its set yet.",
-                color=ACHIEVEMENT_COLOR,
+        if self.mode == MODE_LIST:
+            return _list_embed(
+                self.game,
+                self.achievements,
+                self.list_page,
+                self.page_count,
+                self.ra_username,
             )
-            if self.game.console_name:
-                embed.add_field(name="Console", value=format_console(self.game.console_name))
-            return embed
-        ach = self.achievements[self.page - 1]
-        return _achievement_embed(
+        return _detail_embed(
             self.game,
-            ach,
-            self.page,
+            self.achievements[self.detail_index],
+            self.detail_index,
             len(self.achievements),
             self.ra_username,
         )
 
-    async def go_to(self, interaction: discord.Interaction, new_page: int) -> None:
-        last = self._last_page
-        self.page = max(0, min(new_page, last))
-        self._refresh_state()
+    async def _render(self, interaction: discord.Interaction) -> None:
+        self._rebuild()
         await interaction.response.edit_message(embed=self.current_embed(), view=self)
 
-    async def _on_first(self, interaction: discord.Interaction) -> None:
-        await self.go_to(interaction, 0)
+    # ---- callbacks ----------------------------------------------------------
+
+    async def _on_game(self, interaction: discord.Interaction) -> None:
+        self.mode = MODE_GAME
+        await self._render(interaction)
+
+    async def _on_view_list(self, interaction: discord.Interaction) -> None:
+        self.mode = MODE_LIST
+        self.list_page = 0
+        await self._render(interaction)
+
+    async def _on_back_to_list(self, interaction: discord.Interaction) -> None:
+        self.mode = MODE_LIST
+        # Land on the page containing the achievement we just left, so context
+        # is preserved when bouncing in and out of detail.
+        self.list_page = self.detail_index // PAGE_SIZE
+        await self._render(interaction)
 
     async def _on_prev(self, interaction: discord.Interaction) -> None:
-        await self.go_to(interaction, self.page - 1)
+        if self.mode == MODE_LIST:
+            self.list_page = max(0, self.list_page - 1)
+        elif self.mode == MODE_DETAIL:
+            self.detail_index = max(0, self.detail_index - 1)
+        await self._render(interaction)
 
     async def _on_next(self, interaction: discord.Interaction) -> None:
-        await self.go_to(interaction, self.page + 1)
+        if self.mode == MODE_LIST:
+            self.list_page = min(self.page_count - 1, self.list_page + 1)
+        elif self.mode == MODE_DETAIL:
+            self.detail_index = min(
+                len(self.achievements) - 1, self.detail_index + 1
+            )
+        await self._render(interaction)
 
-    async def _on_last(self, interaction: discord.Interaction) -> None:
-        await self.go_to(interaction, self._last_page)
+    async def _on_drill(self, interaction: discord.Interaction, index: int) -> None:
+        self.mode = MODE_DETAIL
+        self.detail_index = max(0, min(index, len(self.achievements) - 1))
+        await self._render(interaction)
