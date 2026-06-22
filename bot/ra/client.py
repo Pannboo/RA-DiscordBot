@@ -36,6 +36,12 @@ class RAClient:
         )
         self._sem = asyncio.Semaphore(max_concurrency)
 
+    @property
+    def username(self) -> str:
+        """The bot's own authenticated RA account. Guaranteed to exist, so it's
+        a safe `u=` for set-info lookups when the caller isn't linked."""
+        return self._username
+
     async def aclose(self) -> None:
         await self._client.aclose()
 
@@ -107,7 +113,9 @@ class RAClient:
         data = await self._get(
             "/API_GetGameInfoAndUserProgress.php", {"u": username, "g": game_id}
         )
-        if not isinstance(data, dict):
+        # RA returns a payload with a null/empty Title for unknown game ids;
+        # treat that as "not found" rather than letting model validation raise.
+        if not isinstance(data, dict) or not data.get("Title"):
             return None
         return GameInfoProgress.model_validate(data)
 
@@ -139,8 +147,10 @@ class RAClient:
             extended = await extended_task
         except Exception:  # noqa: BLE001
             extended = None
-        if extended:
-            ext_achievements = extended.get("Achievements") or {}
+        # RA normally serves Achievements as a dict keyed by id; guard against
+        # other shapes (e.g. an empty list for sets with no achievements).
+        ext_achievements = extended.get("Achievements") if extended else None
+        if isinstance(ext_achievements, dict):
             types_by_id: dict[int, str] = {}
             for raw in ext_achievements.values():
                 ach_id = raw.get("ID")

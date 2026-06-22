@@ -243,7 +243,10 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
             if user is not None:
                 ra_username = user.ra_username
 
-        lookup_user = ra_username or "RA-DiscordBot"  # any valid username works for set info
+        # When the caller isn't linked we still need a valid RA user for the
+        # set-info lookup. Use the bot's own API account (guaranteed to exist)
+        # rather than a placeholder name that may not be a real account.
+        lookup_user = ra_username or ra.username
         info = await ra.get_game_with_types(lookup_user, game_id)
         if info is None or info.title in (None, ""):
             await interaction.followup.send(
