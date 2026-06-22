@@ -11,11 +11,29 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import unicodedata
 from dataclasses import dataclass
 
 from bot.ra.client import RAClient
 
 log = logging.getLogger(__name__)
+
+# Anything that isn't a letter or digit becomes a space, so punctuation like
+# the colon in "Dragon Ball Z: Shin Budokai" doesn't have to be typed to match.
+_NORMALIZE_RE = re.compile(r"[^a-z0-9]+")
+
+
+def normalize(text: str) -> str:
+    """Lowercase, fold accents, and collapse punctuation/whitespace to spaces.
+
+    "Dragon Ball Z: Shin Budokai" -> "dragon ball z shin budokai" and
+    "Pokémon" -> "pokemon", so a query without the colon or accents still
+    matches.
+    """
+    decomposed = unicodedata.normalize("NFKD", text.lower())
+    folded = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return _NORMALIZE_RE.sub(" ", folded).strip()
 
 
 @dataclass(frozen=True)
@@ -68,10 +86,12 @@ async def get_games(ra: RAClient, console_id: int) -> list[CachedGame]:
 def search(games: list[CachedGame], query: str, limit: int = 25) -> list[CachedGame]:
     """Rank games by how well they match `query`.
 
-    Strict exact match wins, then prefix, then substring. Stable within each
-    bucket by alphabetical title so results don't shuffle between calls.
+    Strict exact match wins, then prefix, then substring. Matching is done on a
+    normalized form (punctuation and extra whitespace ignored) so colons and
+    other symbols don't have to be typed. Stable within each bucket by
+    alphabetical title so results don't shuffle between calls.
     """
-    q = query.strip().lower()
+    q = normalize(query)
     if not q:
         return []
 
@@ -79,7 +99,7 @@ def search(games: list[CachedGame], query: str, limit: int = 25) -> list[CachedG
     prefix: list[CachedGame] = []
     substring: list[CachedGame] = []
     for g in games:
-        t = g.title.lower()
+        t = normalize(g.title)
         if t == q:
             exact.append(g)
         elif t.startswith(q):

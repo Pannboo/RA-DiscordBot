@@ -225,7 +225,9 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
             # so the user can disambiguate by passing the full title.
             game_id = matches[0].id
             disambiguation = ""
-            if len(matches) > 1 and matches[0].title.lower() != game.strip().lower():
+            if len(matches) > 1 and games_cache.normalize(
+                matches[0].title
+            ) != games_cache.normalize(game):
                 others = ", ".join(f"`{m.title}`" for m in matches[1:4])
                 disambiguation = (
                     f"\n_Other matches on {console_name}: {others}_"
