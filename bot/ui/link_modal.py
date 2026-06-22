@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from bot.db import get_session
 from bot.db.models import User
+from bot.poller.detector import seed_awards_on_link
 from bot.ra.client import RAClient
 
 
@@ -80,5 +81,8 @@ class LinkModal(discord.ui.Modal, title="Link RetroAchievements"):
             f"({summary.total_points:,} HC pts · {summary.total_softcore_points:,} SC pts).",
             ephemeral=True,
         )
+        # Seed the award cache now so /ra top and /ra vs are correct immediately,
+        # rather than waiting for the first awards poll. Best-effort.
+        await seed_awards_on_link(self._ra, interaction.user.id)
         if self._on_done is not None:
             await self._on_done(interaction)

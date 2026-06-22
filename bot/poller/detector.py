@@ -9,7 +9,7 @@ from sqlalchemy import select
 from bot.db import get_session
 from bot.db.models import AwardSeen, GameSession, MilestoneSeen, UnlockSeen, User
 from bot.ra.client import RAClient
-from bot.ra.types import AwardEntry, RecentAchievement
+from bot.ra.types import AwardEntry, RecentAchievement, UserAwards
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +74,82 @@ def _classify_award(entry: AwardEntry) -> str | None:
     if "mastery" in t or "completion" in t or "mastered" in t or "completed" in t:
         return "mastered" if entry.is_hardcore else "completed"
     return None
+
+
+def apply_award_counts(user: User, awards: UserAwards) -> None:
+    """Cache RA's authoritative award counts on the User row.
+
+    These are the numbers RA shows on a user's profile and are what `/ra top`
+    and `/ra vs` read, so they stay correct even when individual awards are
+    hidden from `VisibleUserAwards`.
+    """
+    user.mastery_count = awards.mastery_awards_count
+    user.completion_count = awards.completion_awards_count
+    user.beaten_hardcore_count = awards.beaten_hardcore_awards_count
+    user.beaten_softcore_count = awards.beaten_softcore_awards_count
+
+
+async def _reconcile_awards_seen(
+    db, ra_username: str, awards: UserAwards, *, emit: bool
+) -> list[AwardEvent]:
+    """Insert any visible awards we haven't recorded yet into `awards_seen`.
+
+    Returns an `AwardEvent` for each newly-recorded award when `emit` is True;
+    during the initial seed (`emit=False`) we record silently so we don't spam
+    the channel with a user's entire back-catalogue. The caller commits.
+    """
+    out: list[AwardEvent] = []
+    for entry in awards.visible_user_awards:
+        kind = _classify_award(entry)
+        if kind is None or entry.award_data is None:
+            continue
+        exists = await db.scalar(
+            select(AwardSeen).where(
+                AwardSeen.ra_username == ra_username,
+                AwardSeen.game_id == entry.award_data,
+                AwardSeen.kind == kind,
+            )
+        )
+        if exists is not None:
+            continue
+        db.add(
+            AwardSeen(
+                ra_username=ra_username,
+                game_id=entry.award_data,
+                kind=kind,
+                awarded_at=entry.awarded_at,
+            )
+        )
+        if emit:
+            out.append(AwardEvent(kind=kind, award=entry))
+    return out
+
+
+async def seed_awards_on_link(ra: RAClient, discord_id: int) -> None:
+    """Populate the awards cache immediately after a user links.
+
+    Pulls `GetUserAwards` once, caches the authoritative counts and seeds the
+    `awards_seen` rows silently. Best-effort: if the fetch fails we just leave
+    it for the next awards poll to reconcile.
+    """
+    async with get_session() as db:
+        user = await db.get(User, discord_id)
+        ra_username = user.ra_username if user is not None else None
+    if ra_username is None:
+        return
+
+    awards = await ra.get_user_awards(ra_username)
+    if awards is None:
+        return
+
+    async with get_session() as db:
+        user = await db.get(User, discord_id)
+        if user is None:
+            return
+        apply_award_counts(user, awards)
+        await _reconcile_awards_seen(db, user.ra_username, awards, emit=False)
+        user.last_awards_polled_at = datetime.now(timezone.utc)
+        await db.commit()
 
 
 class Detector:
@@ -213,42 +289,23 @@ class Detector:
 
     async def detect_awards_for_user(
         self, user: User, *, seed_only: bool = False
-    ) -> list[AwardEvent]:
+    ) -> tuple[list[AwardEvent], UserAwards | None]:
         """Slower-cadence check for mastery / completion / beaten awards.
 
-        When `seed_only` is True (first poll for a freshly-linked user) we record
-        every existing award without emitting events, so we don't spam the channel
-        with the user's entire historical award list.
+        Returns the new `AwardEvent`s plus the raw `UserAwards` payload (or
+        `None` if the fetch failed) so the caller can refresh the user's cached
+        counts from the same response. When `seed_only` is True (first poll for
+        a freshly-linked user) we record every existing award without emitting
+        events, so we don't spam the channel with the user's entire history.
         """
-        out: list[AwardEvent] = []
         awards = await self._ra.get_user_awards(user.ra_username)
         if awards is None:
-            return out
+            return [], None
 
         async with get_session() as db:
-            for entry in awards.visible_user_awards:
-                kind = _classify_award(entry)
-                if kind is None or entry.award_data is None:
-                    continue
-                exists = await db.scalar(
-                    select(AwardSeen).where(
-                        AwardSeen.ra_username == user.ra_username,
-                        AwardSeen.game_id == entry.award_data,
-                        AwardSeen.kind == kind,
-                    )
-                )
-                if exists is not None:
-                    continue
-                db.add(
-                    AwardSeen(
-                        ra_username=user.ra_username,
-                        game_id=entry.award_data,
-                        kind=kind,
-                        awarded_at=entry.awarded_at,
-                    )
-                )
-                if not seed_only:
-                    out.append(AwardEvent(kind=kind, award=entry))
+            out = await _reconcile_awards_seen(
+                db, user.ra_username, awards, emit=not seed_only
+            )
             await db.commit()
 
-        return out
+        return out, awards

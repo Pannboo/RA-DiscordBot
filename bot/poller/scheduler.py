@@ -15,7 +15,7 @@ from bot.embeds import (
     session_started_embed,
     unlock_embed,
 )
-from bot.poller.detector import Detector
+from bot.poller.detector import Detector, apply_award_counts
 from bot.poller.dispatcher import Dispatcher
 from bot.ra.client import RAClient
 
@@ -236,19 +236,25 @@ class PollScheduler:
             )
             first_time = (seen_count or 0) == 0
             try:
-                events = await self._detector.detect_awards_for_user(
+                events, awards = await self._detector.detect_awards_for_user(
                     user, seed_only=first_time
                 )
-                # Only mark polled on success — failures retry next cycle.
-                user.last_awards_polled_at = now
-                await db.commit()
-                discord_id = user.discord_id
             except Exception:
                 log.exception(
                     "awards detect failed for %s — will retry next cycle", user.ra_username
                 )
                 await db.rollback()
                 return
+            # A None payload is a transient fetch failure: leave the user
+            # un-polled so the next cycle retries instead of caching zeroes.
+            if awards is None:
+                return
+            # Reconcile the cached counts against RA's authoritative numbers.
+            apply_award_counts(user, awards)
+            # Only mark polled on success — failures retry next cycle.
+            user.last_awards_polled_at = now
+            await db.commit()
+            discord_id = user.discord_id
 
         ra_username = user_snapshot.ra_username
         for e in events:

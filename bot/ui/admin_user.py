@@ -8,6 +8,7 @@ from sqlalchemy import delete, select
 
 from bot.db import get_session
 from bot.db.models import User
+from bot.poller.detector import seed_awards_on_link
 from bot.ra.client import RAClient
 from bot.ui.common import ConfirmView, OwnedView
 
@@ -113,6 +114,9 @@ class _AdminLinkModal(discord.ui.Modal, title="Link a user's RA account"):
                 existing.total_softcore_points = summary.total_softcore_points
                 existing.total_retro_points = summary.total_true_points
             await session.commit()
+
+        # Seed the award cache now so leaderboards are correct immediately.
+        await seed_awards_on_link(self._ra, self._target.id)
 
         # Best-effort DM to the target so they know they were linked by an admin.
         admin = interaction.user
