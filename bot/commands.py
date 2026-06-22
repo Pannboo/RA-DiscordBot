@@ -5,10 +5,10 @@ import re
 
 import discord
 from discord import app_commands
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 
 from bot.db import get_session
-from bot.db.models import AwardSeen, GuildConfig, User
+from bot.db.models import GuildConfig, User
 from bot.embeds.aotw import aotw_embed
 from bot.embeds.game import game_progress_embed, unlinked_game_embed
 from bot.ra import games_cache
@@ -225,7 +225,9 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
             # so the user can disambiguate by passing the full title.
             game_id = matches[0].id
             disambiguation = ""
-            if len(matches) > 1 and matches[0].title.lower() != game.strip().lower():
+            if len(matches) > 1 and games_cache.normalize(
+                matches[0].title
+            ) != games_cache.normalize(game):
                 others = ", ".join(f"`{m.title}`" for m in matches[1:4])
                 disambiguation = (
                     f"\n_Other matches on {console_name}: {others}_"
@@ -241,7 +243,10 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
             if user is not None:
                 ra_username = user.ra_username
 
-        lookup_user = ra_username or "RA-DiscordBot"  # any valid username works for set info
+        # When the caller isn't linked we still need a valid RA user for the
+        # set-info lookup. Use the bot's own API account (guaranteed to exist)
+        # rather than a placeholder name that may not be a real account.
+        lookup_user = ra_username or ra.username
         info = await ra.get_game_with_types(lookup_user, game_id)
         if info is None or info.title in (None, ""):
             await interaction.followup.send(
@@ -308,21 +313,11 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
         async with get_session() as session:
             users = (await session.execute(select(User))).scalars().all()
             users = [u for u in users if u.discord_id in guild_member_ids]
-            # Per-user counts grouped by kind, so we can tell masteries apart from beatens.
-            counts: dict[tuple[str, str], int] = {}
-            if users:
-                rows = await session.execute(
-                    select(AwardSeen.ra_username, AwardSeen.kind, func.count())
-                    .where(
-                        AwardSeen.ra_username.in_([u.ra_username for u in users]),
-                        AwardSeen.kind.in_(("mastered", "beaten_hc")),
-                    )
-                    .group_by(AwardSeen.ra_username, AwardSeen.kind)
-                )
-                counts = {(ra_user, kind): cnt for ra_user, kind, cnt in rows.all()}
 
-        # Beaten count is the raw beaten_hc total (which includes mastered games)
-        # to mirror how RA displays these stats on user profiles.
+        # Masteries / beatens come from the per-user award counts cached from RA's
+        # GetUserAwards (seeded on link, reconciled by the awards poller). The
+        # beaten count is the raw hardcore-beaten total — which includes mastered
+        # games — to mirror how RA displays these stats on user profiles.
         rows = [
             LeaderRow(
                 discord_id=u.discord_id,
@@ -330,8 +325,8 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
                 hardcore=u.total_points,
                 softcore=u.total_softcore_points,
                 retropoints=u.total_retro_points,
-                masteries=counts.get((u.ra_username, "mastered"), 0),
-                beatens=counts.get((u.ra_username, "beaten_hc"), 0),
+                masteries=u.mastery_count,
+                beatens=u.beaten_hardcore_count,
             )
             for u in users
         ]
@@ -400,21 +395,6 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
             )
             return
 
-        async with get_session() as session:
-            award_rows = await session.execute(
-                select(AwardSeen.ra_username, AwardSeen.kind, func.count())
-                .where(
-                    AwardSeen.ra_username.in_(
-                        [left_user.ra_username, right_user.ra_username]
-                    ),
-                    AwardSeen.kind.in_(("mastered", "beaten_hc")),
-                )
-                .group_by(AwardSeen.ra_username, AwardSeen.kind)
-            )
-            counts: dict[tuple[str, str], int] = {
-                (ra_user, kind): cnt for ra_user, kind, cnt in award_rows.all()
-            }
-
         def _side(summary, user) -> VsSide:  # noqa: ANN001
             return VsSide(
                 ra_username=summary.user,
@@ -423,9 +403,11 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
                 softcore=summary.total_softcore_points,
                 retropoints=summary.total_true_points,
                 rank=summary.rank,
-                masteries=counts.get((user.ra_username, "mastered"), 0),
-                # Raw beaten_hc, includes mastered games — matches RA's display.
-                beatens=counts.get((user.ra_username, "beaten_hc"), 0),
+                # Cached from RA's GetUserAwards (seeded on link, reconciled by the
+                # awards poller). Raw hardcore-beaten includes mastered games —
+                # matches RA's profile display.
+                masteries=user.mastery_count,
+                beatens=user.beaten_hardcore_count,
             )
 
         left_side = _side(left_summary, left_user)

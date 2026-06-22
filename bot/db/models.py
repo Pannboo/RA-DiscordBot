@@ -33,6 +33,14 @@ class User(Base):
     # Last awards-check timestamp (mastery/beaten polled on a slower cadence).
     last_awards_polled_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
+    # Authoritative award counts cached from RA's GetUserAwards. Seeded on link
+    # and refreshed/reconciled on each awards poll so /ra top and /ra vs can read
+    # them without a per-command API call.
+    mastery_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    completion_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    beaten_hardcore_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    beaten_softcore_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
     # Per-user preferences.
     notify_hardcore_only: Mapped[bool] = mapped_column(Boolean, default=False)
     mention_in_posts: Mapped[bool] = mapped_column(Boolean, default=True)
