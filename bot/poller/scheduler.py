@@ -182,8 +182,13 @@ class PollScheduler:
                 session_evt.game_title,
                 session_evt.console_name,
                 session_evt.game_icon,
+                replay_gap_minutes=session_evt.replay_gap_minutes,
             )
-            await self._dispatcher.post(discord_id, embed)
+            await self._dispatcher.post(
+                discord_id,
+                embed,
+                replay_gap_minutes=session_evt.replay_gap_minutes,
+            )
 
         for u in unlocks:
             if hardcore_only and not u.achievement.is_hardcore:

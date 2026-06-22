@@ -46,7 +46,37 @@ async def build_admin_embed(guild: discord.Guild) -> discord.Embed:
         ),
         inline=False,
     )
+    replay_after = cfg.replay_announce_after_minutes if cfg is not None else 360
+    embed.add_field(
+        name="Re-announce on resume",
+        value=(
+            "🚫 off — only switching games announces"
+            if replay_after <= 0
+            else f"⏱️ after **{_format_minutes(replay_after)}** away from a game"
+        ),
+        inline=False,
+    )
     return embed
+
+
+_REPLAY_PRESETS: list[tuple[int, str]] = [
+    (0, "Off"),
+    (60, "1 hour"),
+    (180, "3 hours"),
+    (360, "6 hours"),
+    (720, "12 hours"),
+    (1440, "24 hours"),
+]
+
+
+def _format_minutes(minutes: int) -> str:
+    if minutes < 60:
+        return f"{minutes} min"
+    hours, rem = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h" if rem == 0 else f"{hours}h {rem}m"
+    days, rem_h = divmod(hours, 24)
+    return f"{days}d" if rem_h == 0 else f"{days}d {rem_h}h"
 
 
 class AdminHubView(OwnedView):
@@ -83,6 +113,19 @@ class AdminHubView(OwnedView):
         )
         self.game_visibility_button.callback = self._on_toggle_game_visibility  # type: ignore[assignment]
         self.add_item(self.game_visibility_button)
+        # Row 3: re-announce-on-resume threshold.
+        self.replay_select = discord.ui.Select(
+            placeholder="Re-announce when a user resumes a game after…",
+            min_values=1,
+            max_values=1,
+            row=3,
+            options=[
+                discord.SelectOption(label=label, value=str(value))
+                for value, label in _REPLAY_PRESETS
+            ],
+        )
+        self.replay_select.callback = self._on_replay_select  # type: ignore[assignment]
+        self.add_item(self.replay_select)
 
     @classmethod
     async def create(
@@ -122,6 +165,11 @@ class AdminHubView(OwnedView):
             self.game_visibility_button.label = "Make /ra game public"
             self.game_visibility_button.style = discord.ButtonStyle.primary
             self.game_visibility_button.emoji = "🌐"
+
+        # Highlight the current re-announce threshold in the select.
+        current_replay = cfg.replay_announce_after_minutes if cfg is not None else 360
+        for option in self.replay_select.options:
+            option.default = int(option.value) == current_replay
 
     @discord.ui.select(
         cls=discord.ui.ChannelSelect,
@@ -201,6 +249,27 @@ class AdminHubView(OwnedView):
             else:
                 cfg.game_lookup_public = not cfg.game_lookup_public
             await session.commit()
+        await self._sync_toggle_label()
+        embed = await build_admin_embed(self._guild)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def _on_replay_select(self, interaction: discord.Interaction) -> None:
+        minutes = int(self.replay_select.values[0])
+        async with get_session() as session:
+            cfg = await session.get(GuildConfig, self._guild.id)
+            if cfg is None:
+                session.add(
+                    GuildConfig(
+                        guild_id=self._guild.id,
+                        announce_channel_id=None,
+                        enabled=False,
+                        replay_announce_after_minutes=minutes,
+                    )
+                )
+            else:
+                cfg.replay_announce_after_minutes = minutes
+            await session.commit()
+        await self._dispatcher.refresh()
         await self._sync_toggle_label()
         embed = await build_admin_embed(self._guild)
         await interaction.response.edit_message(embed=embed, view=self)

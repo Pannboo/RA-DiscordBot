@@ -57,6 +57,11 @@ class GuildConfig(Base):
     # When True, /ra game replies are posted publicly in the channel
     # (still owner-locked for interactions) instead of ephemerally.
     game_lookup_public: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Minutes a user must be away from a game before resuming it counts as a
+    # fresh "Now Playing" announcement. 0 disables the re-announce entirely.
+    replay_announce_after_minutes: Mapped[int] = mapped_column(
+        Integer, default=360, server_default="360"
+    )
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
 
 
@@ -83,6 +88,9 @@ class GameSession(Base):
     ra_username: Mapped[str] = mapped_column(String(64), primary_key=True)
     game_id: Mapped[int] = mapped_column(Integer)
     started_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
+    # Set on every poll that detects the user still on this game. Drives the
+    # "user came back to game X after Y minutes" re-announcement check.
+    last_seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class AwardSeen(Base):

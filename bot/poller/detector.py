@@ -46,6 +46,10 @@ class SessionStartedEvent:
     game_title: str
     console_name: str
     game_icon: str
+    # None when the user just switched to this game; an int when they're picking
+    # the same game back up after being away from it for that many minutes.
+    # Used by the dispatcher to filter per-guild against `replay_announce_after_minutes`.
+    replay_gap_minutes: int | None = None
 
 
 @dataclass
@@ -234,28 +238,48 @@ class Detector:
                 )
 
         if current_game is not None:
+            now = datetime.now(timezone.utc)
+            # We only trust "user is on this game right now" when we have fresh
+            # unlock evidence for it — RA's summary.LastGame is sticky and stays
+            # set long after a user has stopped playing, so it can't anchor
+            # "they came back to it".
+            has_fresh_unlock = bool(
+                latest_unlock_game and latest_unlock_game[0] == current_game[0]
+            )
             async with get_session() as db2:
                 gs = await db2.get(GameSession, user.ra_username)
                 first_time = gs is None
-                if first_time or gs.game_id != current_game[0]:
-                    if first_time:
-                        db2.add(
-                            GameSession(
-                                ra_username=user.ra_username,
-                                game_id=current_game[0],
-                                started_at=datetime.now(timezone.utc),
-                            )
+                if first_time:
+                    db2.add(
+                        GameSession(
+                            ra_username=user.ra_username,
+                            game_id=current_game[0],
+                            started_at=now,
+                            last_seen_at=now if has_fresh_unlock else None,
                         )
-                    else:
-                        gs.game_id = current_game[0]
-                        gs.started_at = datetime.now(timezone.utc)
-                    await db2.commit()
+                    )
                     # Seed silently on first-ever poll (no prior context = not "started now").
-                    if not first_time:
-                        session_out = SessionStartedEvent(*current_game)
-                        # Treat a new session as an activity signal so next poll is 30s,
-                        # not 15min. Useful when the user has no Discord presence.
-                        user.last_presence_active_at = datetime.now(timezone.utc)
+                elif gs.game_id != current_game[0]:
+                    gs.game_id = current_game[0]
+                    gs.started_at = now
+                    gs.last_seen_at = now if has_fresh_unlock else None
+                    session_out = SessionStartedEvent(*current_game)
+                    user.last_presence_active_at = now
+                elif has_fresh_unlock:
+                    # Same game and we have fresh activity. If we previously saw
+                    # them on this game, the gap from then to now is how long
+                    # they were away from it; the dispatcher filters per-guild.
+                    prev_seen = gs.last_seen_at
+                    gs.last_seen_at = now
+                    if prev_seen is not None:
+                        gap_minutes = int((now - prev_seen).total_seconds() // 60)
+                        if gap_minutes >= 1:
+                            gs.started_at = now
+                            session_out = SessionStartedEvent(
+                                *current_game, replay_gap_minutes=gap_minutes
+                            )
+                            user.last_presence_active_at = now
+                await db2.commit()
 
         if summary is not None:
             for kind, old, new in (
