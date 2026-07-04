@@ -162,6 +162,36 @@ class Detector:
     def __init__(self, ra: RAClient, recent_lookback_minutes: int) -> None:
         self._ra = ra
         self._lookback = recent_lookback_minutes
+        # game_id -> ParentGameID (None for non-subsets). Subset relationships
+        # are stable, so we cache for the process lifetime.
+        self._parent_cache: dict[int, int | None] = {}
+
+    async def _parent_of(self, game_id: int) -> int | None:
+        if game_id in self._parent_cache:
+            return self._parent_cache[game_id]
+        try:
+            ext = await self._ra.get_game_extended(game_id)
+        except Exception:  # noqa: BLE001
+            log.exception("get_game_extended failed for game_id=%s", game_id)
+            return None
+        parent_raw = ext.get("ParentGameID") if isinstance(ext, dict) else None
+        parent_id: int | None
+        try:
+            parent_id = int(parent_raw) if parent_raw else None
+        except (TypeError, ValueError):
+            parent_id = None
+        self._parent_cache[game_id] = parent_id
+        return parent_id
+
+    async def _related_games(self, id_a: int, id_b: int) -> bool:
+        """True when two RA game_ids belong to the same set family (parent ↔ subset, or siblings)."""
+        if id_a == id_b:
+            return True
+        parent_a = await self._parent_of(id_a)
+        parent_b = await self._parent_of(id_b)
+        root_a = parent_a if parent_a is not None else id_a
+        root_b = parent_b if parent_b is not None else id_b
+        return root_a == root_b
 
     async def detect_for_user(
         self, user: User
@@ -260,11 +290,23 @@ class Detector:
                     )
                     # Seed silently on first-ever poll (no prior context = not "started now").
                 elif gs.game_id != current_game[0]:
+                    # RA gives subsets their own game_id, so a user unlocking in
+                    # both the base set and its subset (e.g. Project Diva ↔
+                    # `[Subset - Full Combo Songs]`) will flip current_game
+                    # every poll. Treat any move within the same set family as
+                    # a continuation, not a new session.
+                    is_family = await self._related_games(
+                        gs.game_id, current_game[0]
+                    )
                     gs.game_id = current_game[0]
-                    gs.started_at = now
-                    gs.last_seen_at = now if has_fresh_unlock else None
-                    session_out = SessionStartedEvent(*current_game)
-                    user.last_presence_active_at = now
+                    if is_family:
+                        if has_fresh_unlock:
+                            gs.last_seen_at = now
+                    else:
+                        gs.started_at = now
+                        gs.last_seen_at = now if has_fresh_unlock else None
+                        session_out = SessionStartedEvent(*current_game)
+                        user.last_presence_active_at = now
                 elif has_fresh_unlock:
                     # Same game and we have fresh activity. If we previously saw
                     # them on this game, the gap from then to now is how long
