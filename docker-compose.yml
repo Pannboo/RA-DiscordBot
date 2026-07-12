@@ -16,6 +16,7 @@ services:
       retries: 10
 
   bot:
+    image: pannboo/ra-discord-bot:latest
     build: .
     depends_on:
       db:
