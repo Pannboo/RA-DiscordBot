@@ -43,10 +43,26 @@ admin_group = app_commands.Group(
     default_permissions=discord.Permissions(manage_guild=True),
     guild_only=True,
 )
+# ``default_permissions`` only controls Discord's initial command visibility;
+# server admins can override it. Enforce the requirement when a command runs.
+admin_group.add_check(app_commands.checks.has_permissions(manage_guild=True))
 
 
 def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatcher) -> None:
     """Attach all RA commands to the bot's command tree."""
+
+    @tree.error
+    async def on_app_command_error(
+        interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, app_commands.MissingPermissions):
+            message = "You need the **Manage Server** permission to use that command."
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+            return
+        log.exception("Unhandled application-command error", exc_info=error)
 
     @ra_group.command(name="hub", description="Open the RetroAchievements control panel.")
     async def hub(interaction: discord.Interaction) -> None:

@@ -3,6 +3,26 @@ from __future__ import annotations
 import discord
 
 
+async def has_manage_guild_permission(
+    interaction: discord.Interaction, guild: discord.Guild
+) -> bool:
+    """Return whether the interaction user currently has Manage Server.
+
+    Component interactions normally include a ``Member`` object, but fetch from
+    the guild as a fallback so the check remains reliable if the member cache is
+    incomplete.
+    """
+    member = interaction.user if isinstance(interaction.user, discord.Member) else None
+    if member is None:
+        member = guild.get_member(interaction.user.id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(interaction.user.id)
+        except discord.DiscordException:
+            return False
+    return member.guild_permissions.manage_guild
+
+
 class OwnedView(discord.ui.View):
     """A view that only responds to interactions from a specific user.
 
@@ -27,6 +47,27 @@ class OwnedView(discord.ui.View):
         for item in self.children:
             if hasattr(item, "disabled"):
                 item.disabled = True  # type: ignore[attr-defined]
+
+
+class AdminView(OwnedView):
+    """An owner-locked view that also enforces Manage Server on every click."""
+
+    def __init__(
+        self, owner_id: int, guild: discord.Guild, *, timeout: float = 300.0
+    ) -> None:
+        super().__init__(owner_id, timeout=timeout)
+        self._guild = guild
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not await super().interaction_check(interaction):
+            return False
+        if not await has_manage_guild_permission(interaction, self._guild):
+            await interaction.response.send_message(
+                "You need the **Manage Server** permission to use this panel.",
+                ephemeral=True,
+            )
+            return False
+        return True
 
 
 class ConfirmView(OwnedView):

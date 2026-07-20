@@ -7,7 +7,7 @@ from bot.db.models import GuildConfig
 from bot.poller import Dispatcher
 from bot.ra.client import RAClient
 from bot.ui.admin_user import AdminUserPickerView
-from bot.ui.common import OwnedView
+from bot.ui.common import AdminView
 
 
 async def build_admin_embed(guild: discord.Guild) -> discord.Embed:
@@ -79,7 +79,7 @@ def _format_minutes(minutes: int) -> str:
     return f"{days}d" if rem_h == 0 else f"{days}d {rem_h}h"
 
 
-class AdminHubView(OwnedView):
+class AdminHubView(AdminView):
     def __init__(
         self,
         owner_id: int,
@@ -87,8 +87,7 @@ class AdminHubView(OwnedView):
         dispatcher: Dispatcher,
         ra: RAClient,
     ) -> None:
-        super().__init__(owner_id, timeout=300)
-        self._guild = guild
+        super().__init__(owner_id, guild, timeout=300)
         self._dispatcher = dispatcher
         self._ra = ra
         # Toggle button label depends on current state — build dynamically.

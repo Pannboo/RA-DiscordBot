@@ -10,7 +10,7 @@ from bot.db import get_session
 from bot.db.models import User
 from bot.poller.detector import seed_awards_on_link
 from bot.ra.client import RAClient
-from bot.ui.common import ConfirmView, OwnedView
+from bot.ui.common import AdminView, ConfirmView, has_manage_guild_permission
 
 log = logging.getLogger(__name__)
 
@@ -69,6 +69,12 @@ class _AdminLinkModal(discord.ui.Modal, title="Link a user's RA account"):
         self._on_done = on_done
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not await has_manage_guild_permission(interaction, self._guild):
+            await interaction.response.send_message(
+                "You need the **Manage Server** permission to link accounts for others.",
+                ephemeral=True,
+            )
+            return
         await interaction.response.defer(ephemeral=True, thinking=True)
         username = str(self.ra_username.value).strip()
         summary = await self._ra.get_user_summary(username, recent_games=0)
@@ -153,7 +159,7 @@ class _AdminLinkModal(discord.ui.Modal, title="Link a user's RA account"):
 # -----------------------------------------------------------------------------
 
 
-class AdminUserStatusView(OwnedView):
+class AdminUserStatusView(AdminView):
     def __init__(
         self,
         owner_id: int,
@@ -161,7 +167,7 @@ class AdminUserStatusView(OwnedView):
         guild: discord.Guild,
         target: discord.User | discord.Member,
     ) -> None:
-        super().__init__(owner_id, timeout=300)
+        super().__init__(owner_id, guild, timeout=300)
         self._ra = ra
         self._guild = guild
         self._target = target
@@ -224,6 +230,12 @@ class AdminUserStatusView(OwnedView):
         await confirm.wait()
         if not confirm.value:
             return
+        if not await has_manage_guild_permission(interaction, self._guild):
+            await interaction.followup.send(
+                "You need the **Manage Server** permission to unlink accounts for others.",
+                ephemeral=True,
+            )
+            return
         async with get_session() as session:
             await session.execute(delete(User).where(User.discord_id == self._target.id))
             await session.commit()
@@ -235,9 +247,9 @@ class AdminUserStatusView(OwnedView):
 # -----------------------------------------------------------------------------
 
 
-class AdminUserPickerView(OwnedView):
+class AdminUserPickerView(AdminView):
     def __init__(self, owner_id: int, ra: RAClient, guild: discord.Guild) -> None:
-        super().__init__(owner_id, timeout=300)
+        super().__init__(owner_id, guild, timeout=300)
         self._ra = ra
         self._guild = guild
 
