@@ -43,9 +43,6 @@ admin_group = app_commands.Group(
     default_permissions=discord.Permissions(manage_guild=True),
     guild_only=True,
 )
-# ``default_permissions`` only controls Discord's initial command visibility;
-# server admins can override it. Enforce the requirement when a command runs.
-admin_group.add_check(app_commands.checks.has_permissions(manage_guild=True))
 
 
 def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatcher) -> None:
@@ -436,6 +433,9 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
         name="hub",
         description="Open the server-admin RetroAchievements control panel.",
     )
+    # ``default_permissions`` only controls Discord's initial command visibility;
+    # server admins can override it. Enforce the requirement when a command runs.
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def admin_hub(interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
         view = await AdminHubView.create(
@@ -450,6 +450,7 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
         description="Set this server's RetroAchievements announce channel.",
     )
     @app_commands.describe(channel="Channel where unlocks will be posted")
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def setchannel(
         interaction: discord.Interaction, channel: discord.TextChannel
     ) -> None:
@@ -483,6 +484,7 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
         )
 
     @admin_group.command(name="disable", description="Stop posting RA unlocks in this server.")
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def disable(interaction: discord.Interaction) -> None:
         assert interaction.guild_id is not None
         async with get_session() as session:
@@ -500,6 +502,7 @@ def register(tree: app_commands.CommandTree, ra: RAClient, dispatcher: Dispatche
         )
 
     @admin_group.command(name="status", description="Show this server's RA configuration.")
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def admin_status(interaction: discord.Interaction) -> None:
         assert interaction.guild_id is not None
         async with get_session() as session:
