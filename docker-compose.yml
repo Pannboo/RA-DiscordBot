@@ -5,15 +5,24 @@ services:
       POSTGRES_USER: ra
       POSTGRES_PASSWORD: ra
       POSTGRES_DB: ra_bot
+    restart: unless-stopped
+    # Give Postgres time to checkpoint and shut down cleanly. Docker's default
+    # 10s often isn't enough, and a SIGKILL forces crash recovery on next boot.
+    stop_grace_period: 60s
     ports:
       - "5432:5432"
     volumes:
       - ra_pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ra -d ra_bot"]
+      # -h 127.0.0.1 checks over TCP, so the check can't pass against the
+      # socket-only temporary server Postgres runs during first-time init.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ra -d ra_bot"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 12
+      # Failures during this window don't count toward retries, so crash
+      # recovery / WAL replay after an unclean stop doesn't mark it unhealthy.
+      start_period: 120s
 
   bot:
     image: pannboo/ra-discord-bot:latest

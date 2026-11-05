@@ -13,4 +13,4 @@ COPY alembic.ini ./
 COPY alembic ./alembic
 COPY bot ./bot
 
-CMD ["sh", "-c", "alembic upgrade head && python -m bot.main"]
+CMD ["sh", "-c", "python -m bot.db.wait && alembic upgrade head && exec python -m bot.main"]
