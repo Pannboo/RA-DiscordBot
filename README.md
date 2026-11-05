@@ -120,6 +120,21 @@ docker compose up -d --build
 
 Postgres comes up alongside the bot; migrations run on startup.
 
+To run the published image instead of building locally:
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+The image is built and pushed to Docker Hub (`pannboo/ra-discord-bot`) by
+`.github/workflows/docker.yml` on every push to `main` (`latest` + short-SHA
+tags) and on `v*` tags (semver tags), for `linux/amd64` and `linux/arm64`.
+Pull requests only build, they don't push. The workflow needs two repository
+secrets (Settings → Secrets and variables → Actions):
+
+- `DOCKERHUB_USERNAME` — the Docker Hub account name (`pannboo`)
+- `DOCKERHUB_TOKEN` — a Docker Hub access token with Read & Write scope
+
 ### 5. Run locally
 
 For quick local testing, SQLite is the path of least resistance —
