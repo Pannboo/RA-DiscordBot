@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import URL
 
 
 class Settings(BaseSettings):
@@ -15,7 +16,20 @@ class Settings(BaseSettings):
     ra_api_username: str = Field(..., alias="RA_API_USERNAME")
     ra_api_key: str = Field(..., alias="RA_API_KEY")
 
-    database_url: str = Field(..., alias="DATABASE_URL")
+    # Either give a full DATABASE_URL, or leave it unset and the URL is built
+    # from the parts below. The POSTGRES_* names match the postgres image, so
+    # one .env can serve both containers. In Docker, `python -m bot.db.wait`
+    # also searches for the database if the configured host doesn't answer.
+    database_url: str = Field("", alias="DATABASE_URL")
+    db_host: str = Field("db", alias="DB_HOST")
+    db_port: int = Field(5432, alias="DB_PORT")
+    db_user: str = Field("ra", validation_alias=AliasChoices("DB_USER", "POSTGRES_USER"))
+    db_password: str = Field(
+        "ra", validation_alias=AliasChoices("DB_PASSWORD", "POSTGRES_PASSWORD")
+    )
+    db_name: str = Field("ra_bot", validation_alias=AliasChoices("DB_NAME", "POSTGRES_DB"))
+    # Set to false to only ever use the configured host (no searching).
+    db_discovery: bool = Field(True, alias="DB_DISCOVERY")
 
     poll_tick_seconds: int = Field(10, alias="POLL_TICK_SECONDS")
     poll_active_seconds: int = Field(30, alias="POLL_ACTIVE_SECONDS")
@@ -25,6 +39,19 @@ class Settings(BaseSettings):
     awards_interval_seconds: int = Field(900, alias="AWARDS_INTERVAL_SECONDS")
 
     log_level: str = Field("INFO", alias="LOG_LEVEL")
+
+    @model_validator(mode="after")
+    def _build_database_url(self) -> Settings:
+        if not self.database_url:
+            self.database_url = URL.create(
+                "postgresql+asyncpg",
+                username=self.db_user,
+                password=self.db_password,
+                host=self.db_host,
+                port=self.db_port,
+                database=self.db_name,
+            ).render_as_string(hide_password=False)
+        return self
 
     @property
     def dev_guild_id_list(self) -> list[int]:
