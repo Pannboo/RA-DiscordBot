@@ -9,8 +9,11 @@ services:
     # Give Postgres time to checkpoint and shut down cleanly. Docker's default
     # 10s often isn't enough, and a SIGKILL forces crash recovery on next boot.
     stop_grace_period: 60s
+    # Published on host port 6969 (not 5432) so it can't clash with another
+    # Postgres on the host. Only needed for connecting from the host, e.g. with
+    # a database tool; the bot uses the internal network on port 5432.
     ports:
-      - "5432:5432"
+      - "6969:5432"
     volumes:
       - ra_pg_data:/var/lib/postgresql/data
     healthcheck:
