@@ -27,16 +27,23 @@ services:
   bot:
     image: pannboo/ra-discord-bot:latest
     build: .
+    # Only wait for Postgres to *start*. The bot finds the database and waits
+    # for it to be ready itself, so a slow start never fails the deploy.
     depends_on:
       db:
-        condition: service_healthy
+        condition: service_started
     environment:
       DISCORD_TOKEN: ${DISCORD_TOKEN}
       DEV_GUILD_IDS: ${DEV_GUILD_IDS:-}
       RA_API_USERNAME: ${RA_API_USERNAME}
       RA_API_KEY: ${RA_API_KEY}
-      DATABASE_URL: postgresql+asyncpg://ra:ra@db:5432/ra_bot
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # No DATABASE_URL needed: the bot finds Postgres on its own network using
+      # these credentials, whatever the service or container is named. Set
+      # DATABASE_URL (or DB_HOST) to point it somewhere specific.
+      DB_USER: ra
+      DB_PASSWORD: ra
+      DB_NAME: ra_bot
     restart: unless-stopped
 
 volumes:

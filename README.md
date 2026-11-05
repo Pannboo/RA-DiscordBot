@@ -120,6 +120,27 @@ docker compose up -d --build
 
 Postgres comes up alongside the bot; migrations run on startup.
 
+#### How the bot finds the database
+
+The bot doesn't depend on the database's service or container name. On
+startup it looks for Postgres in this order, and waits (up to
+`DB_WAIT_TIMEOUT` seconds, default 300) until one answers:
+
+1. `DATABASE_URL` if set, otherwise `DB_HOST` (default `db`)
+2. Common names for a database service: `db`, `postgres`, `postgresql`,
+   `database`, `pg`, `host.docker.internal`, `localhost`
+3. Any address on the bot container's own network with port 5432 open that
+   accepts the configured username and password
+
+Credentials come from `DB_USER` / `DB_PASSWORD` / `DB_NAME` (the
+`POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` names used by the
+Postgres image also work), defaulting to `ra` / `ra` / `ra_bot`. Set
+`DB_DISCOVERY=false` to only ever use the configured host.
+
+If it can't find the database, the log says what it tried and why each one
+failed (e.g. `password authentication failed`). Note that Postgres only applies
+`POSTGRES_PASSWORD` the first time its data volume is created.
+
 To run the published image instead of building locally:
 
 ```bash
